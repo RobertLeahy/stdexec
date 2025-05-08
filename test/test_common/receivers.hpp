@@ -116,7 +116,7 @@ namespace {
     auto operator=(base_expect_receiver&& other) -> base_expect_receiver& = delete;
 
     void set_called() {
-      called_.store(true);
+      CHECK(!called_.exchange(true));
     }
 
     auto get_env() const noexcept -> _Env {
