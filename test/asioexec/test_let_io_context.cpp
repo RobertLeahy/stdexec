@@ -22,18 +22,19 @@
 //#include <concepts>
 //#include <cstddef>
 //#include <exception>
-//#include <functional>
+#include <functional>
 //#include <memory>
 //#include <mutex>
 //#include <optional>
 //#include <stdexcept>
 //#include <thread>
 #include <type_traits>
-//#include <utility>
+#include <utility>
+#include <variant>
 //#include <asioexec/asio_config.hpp>
 #include <catch2/catch.hpp>
 #include <stdexec/execution.hpp>
-//#include <test_common/receivers.hpp>
+#include <test_common/receivers.hpp>
 #include <test_common/type_helpers.hpp>
 
 using namespace stdexec;
@@ -41,51 +42,65 @@ using namespace asioexec;
 
 namespace {
 
-  static_assert(
-    set_equivalent<
-      ::stdexec::completion_signatures<
-        ::stdexec::set_value_t(int&, float&),
-        ::stdexec::set_value_t(const int&, const float&),
-        ::stdexec::set_value_t(int, float),
-        ::stdexec::set_error_t(int&),
-        ::stdexec::set_error_t(const int&),
-        ::stdexec::set_error_t(int),
-        ::stdexec::set_stopped_t()>,
-      detail::let_io_context::completion_signatures<
-        ::stdexec::completion_signatures<
-          ::stdexec::set_value_t(int&, float&),
-          ::stdexec::set_value_t(const int&, const float&),
-          ::stdexec::set_value_t(int&&, float&&),
-          ::stdexec::set_value_t(int, float),
-          ::stdexec::set_error_t(int&),
-          ::stdexec::set_error_t(const int&),
-          ::stdexec::set_error_t(int),
-          ::stdexec::set_error_t(int&&),
-          ::stdexec::set_stopped_t()>>>);
+  static_assert(set_equivalent<
+                ::stdexec::completion_signatures<
+                  ::stdexec::set_value_t(int&, float&),
+                  ::stdexec::set_value_t(const int&, const float&),
+                  ::stdexec::set_value_t(int, float),
+                  ::stdexec::set_error_t(int&),
+                  ::stdexec::set_error_t(const int&),
+                  ::stdexec::set_error_t(int),
+                  ::stdexec::set_stopped_t()>,
+                detail::let_io_context::completion_signatures<::stdexec::completion_signatures<
+                  ::stdexec::set_value_t(int&, float&),
+                  ::stdexec::set_value_t(const int&, const float&),
+                  ::stdexec::set_value_t(int&&, float&&),
+                  ::stdexec::set_value_t(int, float),
+                  ::stdexec::set_error_t(int&),
+                  ::stdexec::set_error_t(const int&),
+                  ::stdexec::set_error_t(int),
+                  ::stdexec::set_error_t(int&&),
+                  ::stdexec::set_stopped_t()>>>);
 
-  static_assert(
-    std::is_same_v<
-      detail::let_io_context::tuple<
-        ::stdexec::set_value_t(int&, int&&)>::type,
-      std::tuple<
-        ::stdexec::set_value_t,
-        int&,
-        int>>);
+  static_assert(std::is_same_v<
+                detail::let_io_context::tuple<::stdexec::set_value_t(int&, int&&)>::type,
+                std::tuple<::stdexec::set_value_t, int&, int>>);
 
   TEST_CASE(
-    "Tests the implementation detail that stores completion signals", "[asioexec][completion_token]")
-  {
+    "Tests the implementation detail that stores completion signals",
+    "[asioexec][completion_token]") {
     {
-      const detail::let_io_context::storage<
-        ::stdexec::completion_signatures<>> storage;
-      (void)storage;
+      const detail::let_io_context::storage<::stdexec::completion_signatures<>> storage;
+      (void) storage;
+    }
+    using variant = std::variant<std::monostate, int, std::reference_wrapper<int>>;
+    struct receiver : public base_expect_receiver<> {
+      variant& v_;
+      void set_value(int&& i) && noexcept {
+        v_.emplace<int>(i);
+      }
+      void set_value(int& i) && noexcept {
+        v_.emplace<std::reference_wrapper<int>>(i);
+      }
+    };
+    {
+      variant v;
+      detail::let_io_context::storage<
+        ::stdexec::completion_signatures<::stdexec::set_value_t(int), ::stdexec::set_value_t(int&)>>
+        storage;
+      storage.arrive(::stdexec::set_value, 5);
+      std::move(storage).complete(receiver{{}, v});
+      CHECK(std::get<int>(v) == 5);
     }
     {
+      int i = 5;
+      variant v;
       detail::let_io_context::storage<
-        ::stdexec::completion_signatures<
-          ::stdexec::set_value_t(int),
-          ::stdexec::set_value_t(int&)>> storage;
-      storage.arrive(::stdexec::set_value, 5);
+        ::stdexec::completion_signatures<::stdexec::set_value_t(int), ::stdexec::set_value_t(int&)>>
+        storage;
+      storage.arrive(::stdexec::set_value, i);
+      std::move(storage).complete(receiver{{}, v});
+      CHECK(&std::get<std::reference_wrapper<int>>(v).get() == &i);
     }
   }
 
