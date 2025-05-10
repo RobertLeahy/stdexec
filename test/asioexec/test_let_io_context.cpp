@@ -72,6 +72,23 @@ namespace {
         int&,
         int>>);
 
+  TEST_CASE(
+    "Tests the implementation detail that stores completion signals", "[asioexec][completion_token]")
+  {
+    {
+      const detail::let_io_context::storage<
+        ::stdexec::completion_signatures<>> storage;
+      (void)storage;
+    }
+    {
+      detail::let_io_context::storage<
+        ::stdexec::completion_signatures<
+          ::stdexec::set_value_t(int),
+          ::stdexec::set_value_t(int&)>> storage;
+      storage.arrive(::stdexec::set_value, 5);
+    }
+  }
+
   //TEST_CASE(
   //  "When the operation declares separate rvalue and const lvalue completion signatures they are "
   //  "appropriately passed through even if the lvalue is sent mutable",

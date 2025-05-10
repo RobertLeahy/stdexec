@@ -59,7 +59,7 @@ namespace asioexec {
     template<typename Tag, typename... Args>
     struct tuple<Tag(Args...)> {
       using type = std::tuple<
-        Tag,
+        std::remove_cvref_t<Tag>,
         typename decay<Args>::type...>;
     };
 
@@ -80,10 +80,9 @@ namespace asioexec {
         typename tuple<Signatures>::type...>;
       storage_type_ storage_;
       template<typename Tag, typename... Args>
-      static constexpr bool noexcept_ = std::is_nothrow_constructible_v<
-        typename tuple<Tag(Args...)>::type,
-        Tag,
-        Args...>;
+      using tuple_ = typename tuple<Tag(Args...)>::type;
+      template<typename Tag, typename... Args>
+      static constexpr bool noexcept_ = std::is_nothrow_constructible_v<tuple_<Tag, Args...>>;
       template<typename Receiver, typename... Args>
       constexpr void complete_(Receiver&& r, std::tuple<Args...>&& t) noexcept {
         std::apply(
@@ -100,11 +99,11 @@ namespace asioexec {
         STDEXEC_UNREACHABLE();
       }
     public:
-      template<typename... Args>
-      constexpr void arrive(Args&&... args) noexcept(noexcept_<Args...>) {
+      template<typename Tag, typename... Args>
+      constexpr void arrive(Tag t, Args&&... args) noexcept(noexcept_<Tag, Args...>) {
         STDEXEC_ASSERT(std::holds_alternative<std::monostate>(storage_));
-        const auto impl = [&]() noexcept(noexcept_<Args...>) {
-          storage_.template emplace(static_cast<Args&&>(args)...);
+        const auto impl = [&]() noexcept(noexcept_<Tag, Args...>) {
+          storage_.template emplace<tuple_<Tag, Args...>>(static_cast<Tag&&>(t), static_cast<Args&&>(args)...);
         };
         if constexpr (noexcept(impl())) {
           impl();
