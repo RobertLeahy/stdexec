@@ -18,10 +18,10 @@
 
 #include <asioexec/let_io_context.hpp>
 
-//#include <chrono>
+#include <chrono>
 //#include <concepts>
 //#include <cstddef>
-//#include <exception>
+#include <exception>
 #include <functional>
 //#include <memory>
 //#include <mutex>
@@ -31,7 +31,8 @@
 #include <type_traits>
 #include <utility>
 #include <variant>
-//#include <asioexec/asio_config.hpp>
+#include <asioexec/asio_config.hpp>
+#include <asioexec/use_sender.hpp>
 #include <catch2/catch.hpp>
 #include <stdexec/execution.hpp>
 #include <test_common/receivers.hpp>
@@ -68,7 +69,7 @@ namespace {
 
   TEST_CASE(
     "Tests the implementation detail that stores completion signals",
-    "[asioexec][completion_token]") {
+    "[asioexec][let_io_context]") {
     {
       const detail::let_io_context::storage<::stdexec::completion_signatures<>> storage;
       (void) storage;
@@ -77,9 +78,11 @@ namespace {
     struct receiver : public base_expect_receiver<> {
       variant& v_;
       void set_value(int&& i) && noexcept {
+        set_called();
         v_.emplace<int>(i);
       }
       void set_value(int& i) && noexcept {
+        set_called();
         v_.emplace<std::reference_wrapper<int>>(i);
       }
     };
@@ -104,34 +107,31 @@ namespace {
     }
   }
 
-  //TEST_CASE(
-  //  "When the operation declares separate rvalue and const lvalue completion signatures they are "
-  //  "appropriately passed through even if the lvalue is sent mutable",
-  //  "[asioexec][completion_token]") {
-  //  const auto initiating_function = [](const bool rvalue, auto&& token) {
-  //    return asio_impl::async_initiate<decltype(token), void(std::mutex &&), void(const std::mutex&)>(
-  //      [rvalue](auto&& h) {
-  //        std::mutex m;
-  //        if (rvalue) {
-  //          std::invoke(std::forward<decltype(h)>(h), std::move(m));
-  //        } else {
-  //          std::invoke(std::forward<decltype(h)>(h), m);
-  //        }
-  //      },
-  //      token);
-  //  };
-  //  value_category_receiver::kind rvalue_kind{value_category_receiver::kind::none};
-  //  value_category_receiver::kind lvalue_kind{value_category_receiver::kind::none};
-  //  auto rvalue = connect_shared(
-  //    initiating_function(true, completion_token), value_category_receiver(rvalue_kind));
-  //  auto lvalue = connect_shared(
-  //    initiating_function(false, completion_token), value_category_receiver(lvalue_kind));
-  //  CHECK(rvalue_kind == value_category_receiver::kind::none);
-  //  start_shared(std::move(rvalue));
-  //  CHECK(rvalue_kind == value_category_receiver::kind::rvalue);
-  //  CHECK(lvalue_kind == value_category_receiver::kind::none);
-  //  start_shared(std::move(lvalue));
-  //  CHECK(lvalue_kind == value_category_receiver::kind::const_lvalue);
-  //}
+  TEST_CASE(
+    "A simple asynchronous operation is run against a provided io_context",
+    "[asioexec][let_io_context]") {
+    auto sender = let_io_context([](auto&& ctx) {
+      return
+        ::stdexec::just(
+          asio_impl::system_timer(ctx)) |
+        ::stdexec::let_value([](auto&& timer) {
+          return timer.async_wait(use_sender);
+        });
+    });
+    static_assert(
+      set_equivalent<
+        ::stdexec::completion_signatures<
+          ::stdexec::set_value_t(),
+          ::stdexec::set_error_t(std::exception_ptr),
+          ::stdexec::set_stopped_t()>,
+        ::stdexec::completion_signatures_of_t<
+          decltype(sender),
+          ::stdexec::env<>>>);
+    //auto op = std::move(sender).connect(expect_void_receiver{});
+    //auto op = ::stdexec::connect(
+    //  std::move(sender),
+    //  expect_void_receiver{});
+    //::stdexec::start(op);
+  }
 
 } // namespace
