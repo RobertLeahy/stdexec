@@ -75,17 +75,21 @@ namespace {
       (void) storage;
     }
     using variant = std::variant<std::monostate, int, std::reference_wrapper<int>>;
+
     struct receiver : public base_expect_receiver<> {
       variant& v_;
+
       void set_value(int&& i) && noexcept {
         set_called();
         v_.emplace<int>(i);
       }
+
       void set_value(int& i) && noexcept {
         set_called();
         v_.emplace<std::reference_wrapper<int>>(i);
       }
     };
+
     {
       variant v;
       detail::let_io_context::storage<
@@ -111,27 +115,31 @@ namespace {
     "A simple asynchronous operation is run against a provided io_context",
     "[asioexec][let_io_context]") {
     auto sender = let_io_context([](auto&& ctx) {
-      return
-        ::stdexec::just(
-          asio_impl::system_timer(ctx)) |
-        ::stdexec::let_value([](auto&& timer) {
-          return timer.async_wait(use_sender);
-        });
+      return ::stdexec::just(asio_impl::system_timer(ctx)) | ::stdexec::let_value([](auto&& timer) {
+               timer.expires_after(std::chrono::milliseconds(1));
+               return timer.async_wait(use_sender);
+             });
     });
-    static_assert(
-      set_equivalent<
-        ::stdexec::completion_signatures<
-          ::stdexec::set_value_t(),
-          ::stdexec::set_error_t(std::exception_ptr),
-          ::stdexec::set_stopped_t()>,
-        ::stdexec::completion_signatures_of_t<
-          decltype(sender),
-          ::stdexec::env<>>>);
-    //auto op = std::move(sender).connect(expect_void_receiver{});
-    //auto op = ::stdexec::connect(
-    //  std::move(sender),
-    //  expect_void_receiver{});
-    //::stdexec::start(op);
+    static_assert(set_equivalent<
+                  ::stdexec::completion_signatures<
+                    ::stdexec::set_value_t(),
+                    ::stdexec::set_error_t(std::exception_ptr),
+                    ::stdexec::set_stopped_t()>,
+                  ::stdexec::completion_signatures_of_t<decltype(sender), ::stdexec::env<>>>);
+    static_assert(set_equivalent<
+                  ::stdexec::completion_signatures<
+                    ::stdexec::set_value_t(),
+                    ::stdexec::set_error_t(std::exception_ptr),
+                    ::stdexec::set_stopped_t()>,
+                  ::stdexec::completion_signatures_of_t<const decltype(sender)&, ::stdexec::env<>>>);
+    {
+      auto op = ::stdexec::connect(sender, expect_void_receiver{});
+      ::stdexec::start(op);
+    }
+    {
+      auto op = ::stdexec::connect(std::move(sender), expect_void_receiver{});
+      ::stdexec::start(op);
+    }
   }
 
 } // namespace

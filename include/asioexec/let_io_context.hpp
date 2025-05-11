@@ -131,43 +131,6 @@ namespace asioexec {
         return !std::holds_alternative<std::monostate>(storage_);
       }
     };
-
-    //  This should eventually be replaced by an inlinable receiver
-    template<typename State>
-    class receiver {
-      State& self_;
-    public:
-      using receiver_concept = ::stdexec::receiver_t;
-      constexpr explicit receiver(State& self) noexcept : self_(self) {}
-      template<typename T>
-      //  requires requires(State s) {
-      //    { s.set_error(std::declval<T>()) } noexcept;
-      //  }
-      constexpr void set_error(T&& t) && noexcept {
-        self_.set_error(static_cast<T&&>(t));
-      }
-      template<typename... Args>
-      //  requires requires(State s) {
-      //    { s.set_value(std::declval<Args>()...) } noexcept;
-      //  }
-      constexpr void set_value(Args&&... args) && noexcept {
-        self_.set_value(static_cast<Args&&>(args)...);
-      }
-      template<typename... Args>
-      constexpr void set_stopped(Args&&... args) && noexcept /*requires requires(State s) {
-        { s.set_stopped() } noexcept;
-      }*/
-      {
-        self_.set_stopped(static_cast<Args&&>(args)...);
-      }
-      template<typename... Args>
-      decltype(auto) get_env(Args&&... args) const noexcept /*requires requires(State s) {
-        s.get_env();
-      }*/
-      {
-        return self_.get_env(static_cast<Args&&>(args)...);
-      }
-    };
     
     template<typename Invocable>
     concept invocable =
@@ -183,46 +146,58 @@ namespace asioexec {
 
     template<typename Sender, typename Receiver>
     class operation_state {
-      using receiver_ = receiver<operation_state>;
+      class receiver_ {
+        operation_state& self_;
+      public:
+        using receiver_concept = ::stdexec::receiver_t;
+        constexpr explicit receiver_(operation_state& self) noexcept : self_(self) {}
+        template<typename... Args>
+        constexpr void set_error(Args&&... args) && noexcept {
+          self_.arrive_(::stdexec::set_error, static_cast<Args&&>(args)...);
+        }
+        template<typename... Args>
+        constexpr void set_value(Args&&... args) && noexcept {
+          self_.arrive_(::stdexec::set_value, static_cast<Args&&>(args)...);
+        }
+        template<typename... Args>
+        constexpr void set_stopped(Args&&... args) && noexcept {
+          self_.arrive_(::stdexec::set_stopped, static_cast<Args&&>(args)...);
+        }
+        template<typename... Args>
+        ::stdexec::env_of_t<Receiver> get_env(Args&&... args) const noexcept {
+          return ::stdexec::get_env(self_.r_);
+        }
+      };
       using operation_state_ = ::stdexec::connect_result_t<Sender, receiver_>;
       using completion_signatures_ = completion_signatures<
         ::stdexec::completion_signatures_of_t<
           Sender,
           ::stdexec::env_of_t<Receiver>>>;
+      using storage_type_ = storage<completion_signatures_>;
       Receiver r_;
       asio_impl::io_context ctx_;
       operation_state_ op_;
-      storage<completion_signatures_> storage_;
+      storage_type_ storage_;
+      template<typename... Args>
+      void arrive_(Args&&... args) noexcept {
+        //  TODO: Exceptions
+        storage_.arrive(static_cast<Args&&>(args)...);
+      }
     public:
       template<typename Invocable>
       explicit operation_state(Invocable&& i, Receiver r)
         : r_(static_cast<Receiver&&>(r)),
           op_(
             ::stdexec::connect(
-              std::invoke(static_cast<Invocable>(i)),
+              std::invoke(static_cast<Invocable>(i), ctx_),
               receiver_(*this)))
       {}
-      decltype(auto) get_env() const noexcept {
-        return ::stdexec::get_env(r_);
-      }
-      template<typename... Args>
-      void set_value(Args&&... args) noexcept {
-        storage_.arrive(::stdexec::set_value, static_cast<Args&&>(args)...);
-      }
-      template<typename... Args>
-      void set_error(Args&&... args) noexcept {
-        storage_.arrive(::stdexec::set_error, static_cast<Args&&>(args)...);
-      }
-      template<typename... Args>
-      void set_stopped(Args&&... args) noexcept {
-        storage_.arrive(::stdexec::set_stopped, static_cast<Args&&>(args)...);
-      }
       void start() & noexcept {
         ::stdexec::start(op_);
         [&]() noexcept {
           (void)ctx_.run();
         }();
-        storage_.complete(static_cast<Receiver>(r_));
+        static_cast<storage_type_&&>(storage_).complete(static_cast<Receiver&&>(r_));
       }
     };
 
