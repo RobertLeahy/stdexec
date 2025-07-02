@@ -189,6 +189,12 @@ namespace STDEXEC {
 
   struct _THE_RECEIVER_DOES_NOT_ACCEPT_ALL_OF_THE_SENDERS_COMPLETION_SIGNALS_ { };
 
+  template <class _Receiver, class _ChildOp>
+  concept inlinable_receiver = receiver<_Receiver> &&
+    requires (_ChildOp* __child_op) {
+      { _Receiver::make_receiver_for(__child_op) } noexcept -> same_as<_Receiver>;
+    };
+
   namespace __detail {
     template <class _Receiver, class _Tag, class... _Args>
     constexpr auto __try_completion(_Tag (*)(_Args...)) -> __mexception<
