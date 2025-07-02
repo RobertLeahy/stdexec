@@ -183,6 +183,12 @@ namespace stdexec {
                   && __nothrow_move_constructible<__decay_t<_Receiver>>
                   && constructible_from<__decay_t<_Receiver>, _Receiver>;
 
+  template <class _Receiver, class _ChildOp>
+  concept inlinable_receiver = receiver<_Receiver> &&
+    requires (_ChildOp* __child_op) {
+      { _Receiver::make_receiver_for(__child_op) } noexcept -> same_as<_Receiver>;
+    };
+
   namespace __detail {
     template <class _Receiver, class _Tag, class... _Args>
     auto __try_completion(_Tag (*)(_Args...))
