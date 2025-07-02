@@ -124,7 +124,7 @@ constexpr void decay(T&&) noexcept(
   std::is_nothrow_constructible_v<std::decay_t<T>, T>);
 
 template<typename Object, typename T>
-  requires requires(Object& object, storage<T>& storage) {
+  requires requires(Object object, storage<T> storage) {
     { object.construct(storage.get_uninitialized_storage()) } -> ::stdexec::sender;
   }
 constexpr auto get_constructor(Object& object, storage<T>& storage)
@@ -134,7 +134,7 @@ constexpr auto get_constructor(Object& object, storage<T>& storage)
 }
 
 template<typename Object, typename T>
-  requires requires(Object& object) {
+  requires requires(Object object) {
     { object.construct() } -> ::stdexec::sender;
   }
 constexpr auto get_constructor(Object& object, storage<T>&) noexcept(
@@ -144,24 +144,42 @@ constexpr auto get_constructor(Object& object, storage<T>&) noexcept(
 }
 
 template<typename Object, typename T>
-  requires requires(Object& object, storage<T>& storage) {
-    { object.destroy(storage.get_initialized_storage()) } -> ::stdexec::sender;
+  requires requires(Object object, storage<T> storage) {
+    { ((Object&&)object).destroy(storage.get_initialized_storage()) } noexcept -> ::stdexec::sender;
   }
-constexpr auto get_destructor(Object& object, storage<T>& storage)
-  noexcept(noexcept(with::decay(object.destroy(storage.get_initialized_storage()))))
-{
-  return object.destroy(storage.get_initialized_storage());
+constexpr auto get_destructor(Object&& object, storage<T>& storage) noexcept {
+  return ((Object&&)object).destroy(storage.get_initialized_storage());
 }
 
 template<typename Object, typename T>
-  requires requires(Object& object) {
-    { object.destroy() } -> ::stdexec::sender;
+  requires requires(Object object) {
+    { ((Object&&)object).destroy() } noexcept -> ::stdexec::sender;
   }
-constexpr auto get_destructor(Object& object, storage<T>&) noexcept(
-  noexcept(with::decay(object.destroy())))
-{
-  return object.destroy();
+constexpr auto get_destructor(Object&& object, storage<T>&) noexcept {
+  return ((Object&&)object).destroy();
 }
+
+template<typename Object>
+struct type_from_object {
+  using type = void;
+};
+
+template<typename Object>
+concept has_type = requires {
+  typename Object::type;
+};
+
+template<typename Object>
+  requires has_type<Object>
+struct type_from_object<Object>;
+
+template<typename Object>
+  requires
+    has_type<Object> &&
+    object<typename Object::type>
+struct type_from_object<Object> {
+  using type = typename Object::type;
+};
 
 template<
   typename Derived,
@@ -171,7 +189,7 @@ template<
 class object_state {
 private:
   static_assert(std::is_nothrow_move_constructible_v<Env>);
-  using type_ = typename Object::type;
+  using type_ = typename type_from_object<Object>::type;
   using storage_type_ = storage<type_>;
   using constructed_tag_ = constructed_tag<I>;
   using destroyed_tag_ = destroyed_tag<I>;
@@ -192,18 +210,29 @@ private:
       : self_(self)
     {}
     constexpr void set_value() && noexcept {
+      self_.complete_construct_();
       //  TODO
     }
     template<typename... Args>
     constexpr void set_error(Args&&... args) && noexcept {
+      self_.complete_construct_();
       //  TODO
     }
     template<typename... Args>
     constexpr void set_stopped(Args&&... args) && noexcept {
+      self_.complete_construct_();
       //  TODO
     }
     constexpr construct_env_ get_env() noexcept {
       return self_.object_storage_.get_construct_env(self_.get_env_());
+    }
+    template<typename ChildOp>
+    constexpr static construct_receiver_ make_receiver_for(ChildOp* ptr) noexcept {
+      static_assert(std::is_same_v<construct_operation_state_, ChildOp>);
+      return construct_receiver_(
+        //  TODO: This is UB
+        *std::launder(
+          reinterpret_cast<object_state>(ptr)));
     }
   private:
     object_state& self_;
@@ -215,27 +244,38 @@ private:
   using construct_operation_state_ = ::stdexec::connect_result_t<
     constructor_,
     construct_receiver_>;
+  static_assert(::stdexec::inlinable_receiver<construct_receiver_, construct_operation_state_>);
   struct destroy_receiver_ {
     using receiver_concept = ::stdexec::receiver_t;
     constexpr explicit destroy_receiver_(object_state& self) noexcept
       : self_(self)
     {}
     constexpr void set_value() && noexcept {
+      self_.complete_destroy_();
       //  TODO
     }
     constexpr destroy_env_ get_env() noexcept {
       return self_.object_storage_.get_destroy_env(self_.get_env_());
+    }
+    template<typename ChildOp>
+    constexpr static destroy_receiver_ make_receiver_for(ChildOp* ptr) noexcept {
+      static_assert(std::is_same_v<destroy_operation_state_, ChildOp>);
+      return destroy_receiver_(
+        //  TODO: This is UB
+        *std::launder(
+          reinterpret_cast<object_state>(ptr)));
     }
   private:
     object_state& self_;
   };
   using destructor_ = decltype(
     with::get_destructor(
-      std::declval<Object&>(),
+      std::declval<Object>(),
       std::declval<storage_type_&>()));
   using destroy_operation_state_ = ::stdexec::connect_result_t<
     destructor_,
     destroy_receiver_>;
+  static_assert(::stdexec::inlinable_receiver<destroy_receiver_, destroy_operation_state_>);
   static_assert(
     noexcept(
       ::stdexec::connect(
@@ -249,39 +289,54 @@ private:
     sizeof(destroy_operation_state_));
   alignas(align_) std::byte operation_state_storage_[size_];
   storage_type_ object_storage_;
-  template<typename OperationState, typename Receiver, typename Sender>
-  constexpr decltype(auto) connect_(Sender&& sender) noexcept(
-    noexcept(
-      ::stdexec::connect(
-        std::declval<Sender>(),
-        std::declval<Receiver>())))
-  {
-    return *new(operation_state_storage_) OperationState(
-      ::stdexec::connect(
-        (Sender&&)sender,
-        Receiver(*this)));
+  Object object_;
+  constexpr construct_operation_state_* get_construct_operation_state_() noexcept {
+    return std::launder(
+      reinterpret_cast<construct_operation_state_*>(
+        operation_state_storage_));
+  }
+  constexpr destroy_operation_state_* get_destroy_operation_state_() noexcept {
+    return std::launder(
+      reinterpret_cast<destroy_operation_state_*>(
+        operation_state_storage_));
+  }
+  constexpr void complete_construct_() noexcept {
+    get_construct_operation_state_()->~construct_operation_state_();
+  }
+  constexpr void complete_destroy_() noexcept {
+    get_destroy_operation_state_()->~destroy_operation_state_();
   }
 public:
   object_state(const object_state&) = delete;
   object_state& operator=(const object_state&) = delete;
-  //constexpr object_state(
-  //  constructor_&& constructor,
-  //  destructor_&& destructor) noexcept(
-  //    std::is_nothrow_move_constructible_v<destructor_> &&
-  //    noexcept(
-  //      ::stdexec::connect(
-  //        std::move(constructor),
-  //        std::declval<construct_receiver_>())))
-  //{
-  //  connect_<construct_operation_state_, construct_receiver_>(
-  //    (Constructor&&)constructor);
-  //}
-  constexpr ~object_state() noexcept {
-    //  TODO
+  constexpr object_state(Object o) noexcept(
+    std::is_nothrow_move_constructible_v<Object>)
+    : object_((Object&&)o)
+  {}
+  constexpr void connect_construct() noexcept(
+    noexcept(
+      ::stdexec::connect(
+        with::get_constructor(
+          std::declval<Object&>(),
+          std::declval<storage_type_&>()),
+        std::declval<construct_receiver_>())))
+  {
+    new(operation_state_storage_) construct_operation_state_(
+      ::stdexec::connect(
+        with::get_constructor(object_, object_storage_),
+        construct_receiver_(*this)));
   }
-  //  TODO
-  void destroy() noexcept {
-    //  TODO
+  constexpr void start_construct() noexcept {
+    ::stdexec::start(*get_construct_operation_state_());
+  }
+  constexpr void connect_destroy() noexcept {
+    new(operation_state_storage_) destroy_operation_state_(
+      ::stdexec::connect(
+        with::get_destructor((Object&&)object_, object_storage_),
+        destroy_receiver_(*this)));
+  }
+  constexpr void start_destroy() noexcept {
+    ::stdexec::start(*get_destroy_operation_state_());
   }
 };
 

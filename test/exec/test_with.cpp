@@ -20,6 +20,9 @@
 #include <catch2/catch.hpp>
 #include <stdexec/execution.hpp>
 
+#include <memory>
+#include <new>
+
 //#  include "../test_common/require_terminate.hpp"
 //#  include "../test_common/schedulers.hpp"
 
@@ -84,7 +87,70 @@ TEST_CASE("Constructor and destructor are obtained from an object when the "
 TEST_CASE("Per object state functions as expected when given simple senders "
   "which do not use the environment", "[with][detail]")
 {
-  //  TODO
+  struct state {
+    std::size_t construct{0};
+    std::size_t destroy{0};
+  };
+  //  Use count allows us to instrument leaks
+  std::shared_ptr<void> ptr(std::make_shared<int>(5));
+  struct object {
+    using type = int;
+    auto construct(void* storage) {
+      return
+        ::stdexec::just(ptr) |
+        ::stdexec::then([this, storage](auto&&) {
+          ++s.construct;
+          new(storage) int(5);
+        });
+    }
+    auto destroy() && noexcept {
+      return
+        ::stdexec::just(ptr) |
+        ::stdexec::then([this](auto&&) noexcept {
+          ++s.destroy;
+        });
+    }
+    state& s;
+    std::shared_ptr<void>& ptr;
+  };
+  class derived : public detail::with::object_state<
+    derived,
+    ::stdexec::env<>,
+    0,
+    object>
+  {
+    using base_ = detail::with::object_state<
+      derived,
+      ::stdexec::env<>,
+      0,
+      object>;
+  public:
+    using base_::base_;
+  };
+  state s;
+  {
+    derived d(object{s, ptr});
+    CHECK(ptr.use_count() == 1U);
+    CHECK(s.construct == 0U);
+    CHECK(s.destroy == 0U);
+    d.connect_construct();
+    CHECK(ptr.use_count() == 2U);
+    CHECK(s.construct == 0U);
+    CHECK(s.destroy == 0U);
+    d.start_construct();
+    CHECK(ptr.use_count() == 1U);
+    CHECK(s.construct == 1U);
+    CHECK(s.destroy == 0U);
+    d.connect_destroy();
+    CHECK(ptr.use_count() == 2U);
+    CHECK(s.construct == 1U);
+    CHECK(s.destroy == 0U);
+    d.start_destroy();
+    CHECK(ptr.use_count() == 1U);
+    CHECK(s.construct == 1U);
+    CHECK(s.destroy == 1U);
+  }
+  CHECK(ptr.use_count() == 1U);
 }
 
 } // unnamed namespace
