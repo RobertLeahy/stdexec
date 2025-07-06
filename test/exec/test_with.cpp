@@ -20,6 +20,7 @@
 #include <catch2/catch.hpp>
 #include <stdexec/execution.hpp>
 
+#include <cstddef>
 #include <memory>
 #include <new>
 
@@ -126,6 +127,14 @@ TEST_CASE("Per object state functions as expected when given simple senders "
       object>;
   public:
     using base_::base_;
+    template<std::size_t N>
+    void constructed() noexcept {
+      //  TODO
+    }
+    template<std::size_t N>
+    void destroyed() noexcept {
+      //  TODO
+    }
   };
   state s;
   {

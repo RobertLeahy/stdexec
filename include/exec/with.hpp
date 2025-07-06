@@ -114,10 +114,10 @@ struct storage<void> {
   }
 };
 
-template<std::size_t I>
-struct constructed_tag : std::integral_constant<std::size_t, I> {};
-template<std::size_t I>
-struct destroyed_tag : std::integral_constant<std::size_t, I> {};
+//template<std::size_t I>
+//struct constructed_tag : std::integral_constant<std::size_t, I> {};
+//template<std::size_t I>
+//struct destroyed_tag : std::integral_constant<std::size_t, I> {};
 
 template<typename T>
 constexpr void decay(T&&) noexcept(
@@ -191,8 +191,8 @@ private:
   static_assert(std::is_nothrow_move_constructible_v<Env>);
   using type_ = typename type_from_object<Object>::type;
   using storage_type_ = storage<type_>;
-  using constructed_tag_ = constructed_tag<I>;
-  using destroyed_tag_ = destroyed_tag<I>;
+  //using constructed_tag_ = constructed_tag<I>;
+  //using destroyed_tag_ = destroyed_tag<I>;
   using construct_env_ = decltype(
     std::declval<storage_type_&>().get_construct_env(std::declval<Env>()));
   using destroy_env_ = decltype(
@@ -211,17 +211,17 @@ private:
     {}
     constexpr void set_value() && noexcept {
       self_.complete_construct_();
-      //  TODO
+      self_.get_derived_().template constructed<I>();
     }
     template<typename... Args>
     constexpr void set_error(Args&&... args) && noexcept {
       self_.complete_construct_();
-      //  TODO
+      self.get_derived_().template construct_error<I>((Args&&)args...);
     }
     template<typename... Args>
     constexpr void set_stopped(Args&&... args) && noexcept {
       self_.complete_construct_();
-      //  TODO
+      self.get_derived_().template construct_stopped<I>((Args&&)args...);
     }
     constexpr construct_env_ get_env() noexcept {
       return self_.object_storage_.get_construct_env(self_.get_env_());
@@ -252,7 +252,7 @@ private:
     {}
     constexpr void set_value() && noexcept {
       self_.complete_destroy_();
-      //  TODO
+      self_.get_derived_().template destroyed<I>();
     }
     constexpr destroy_env_ get_env() noexcept {
       return self_.object_storage_.get_destroy_env(self_.get_env_());
