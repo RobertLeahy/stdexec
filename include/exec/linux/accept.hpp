@@ -1,0 +1,55 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ *                         Copyright (c) 2025 Robert Leahy. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+ *
+ * Licensed under the Apache License, Version 2.0 with LLVM Exceptions (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * https://llvm.org/LICENSE.txt
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#pragma once
+
+#include <cstdint>
+#include <cstring>
+#include "can_populate_sqe.hpp"
+#include "io_or_throw.hpp"
+#include "io_uring_context.hpp"
+#include "io_uring_file_descriptor.hpp"
+#include "../../stdexec/execution.hpp"
+
+#include <sys/socket.h>
+
+namespace exec {
+
+template<can_populate_sqe FD>
+::stdexec::sender auto accept(FD& fd, const int flags = 0) noexcept {
+  return
+    ::stdexec::just(::sockaddr_storage{}) |
+    ::stdexec::let_value([&](::sockaddr_storage& addr) noexcept {
+    }
+    exec::io_or_throw(
+      fd.context(),
+      "IORING_OP_ACCEPT",
+      [&fd, how](::io_uring_sqe& sqe) noexcept {
+          std::memset(&sqe, 0, sizeof(sqe));
+          sqe.opcode = IORING_OP_SHUTDOWN;
+          fd.populate_sqe(sqe);
+          sqe.len = how;
+      }) |
+    ::stdexec::then([](const ::io_uring_cqe&) noexcept {
+      //  The CQE conveys no information beyond success or failure which
+      //  io_or_throw handles
+    });
+
+}
+
+} // namespace exec
