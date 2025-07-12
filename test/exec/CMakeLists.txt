@@ -39,6 +39,11 @@ set(exec_test_sources
     test_at_coroutine_exit.cpp
     test_materialize.cpp
     $<$<BOOL:${STDEXEC_ENABLE_IO_URING}>:test_io_uring_context.cpp>
+    $<$<BOOL:${STDEXEC_ENABLE_IO_URING}>:test_io_uring_file_descriptor.cpp>
+    $<$<BOOL:${STDEXEC_ENABLE_IO_URING}>:test_io_uring_socket.cpp>
+    $<$<BOOL:${STDEXEC_ENABLE_IO_URING}>:test_io_uring_filesystem.cpp
+    $<$<BOOL:${STDEXEC_ENABLE_IO_URING}>:test_io_uring_tmpfile.cpp
+    $<$<BOOL:${STDEXEC_ENABLE_IO_URING}>:test_tmpdir.cpp
     $<$<BOOL:${STDEXEC_ENABLE_WINDOWS_THREAD_POOL}>:test_windows_thread_pool_context.cpp>
     test_trampoline_scheduler.cpp
     test_sequence_senders.cpp
