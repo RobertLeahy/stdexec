@@ -1,336 +1,698 @@
-/*
- * Copyright (c) 2023 Maikel Nadolski
- * Copyright (c) 2023 NVIDIA Corporation
- *
- * Licensed under the Apache License Version 2.0 with LLVM Exceptions
- * (the "License"); you may not use this file except in compliance with
- * the License. You may obtain a copy of the License at
- *
- *   https://llvm.org/LICENSE.txt
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+#include <exec/linux/io_uring_context.hpp>
 
-#include <linux/version.h>
+#include <linux/io_uring.h>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstring>
+#include <exception>
+#include <system_error>
+#include <thread>
+#include <type_traits>
+#include <vector>
+#include <exec/finally.hpp>
+#include <exec/linux/safe_file_descriptor.hpp>
+#include <exec/env.hpp>
+#include "../test_common/receivers.hpp"
+#include "../test_common/type_helpers.hpp"
 
-// Some kernel versions have <linux/io_uring.h> but don't support or don't
-// allow user access to some of the necessary system calls.
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 0) && __has_include(<linux/io_uring.h>)
-
-#  include "exec/linux/io_uring_context.hpp"
-#  include "exec/scope.hpp"
-#  include "exec/single_thread_context.hpp"
-#  include "exec/finally.hpp"
-#  include "exec/when_any.hpp"
-
-#  include "catch2/catch.hpp"
-
-using namespace stdexec;
-using namespace exec;
-using namespace std::chrono_literals;
+#include "catch2/catch.hpp"
 
 namespace {
 
-  // clang-12 does not know jthread yet
-  class jthread {
-    std::thread thread_;
+using namespace exec;
 
-   public:
-    template <typename Callable, typename... Args>
-    explicit jthread(Callable&& callable, Args&&... args)
-      : thread_(std::forward<Callable>(callable), std::forward<Args>(args)...) {
+struct throwing_move {
+  throwing_move(throwing_move&&);
+};
+
+static_assert(
+  std::is_same_v<
+    detail::io_uring_context::maybe_decay<int>::type,
+    int>);
+static_assert(
+  std::is_same_v<
+    detail::io_uring_context::maybe_decay<int&&>::type,
+    int>);
+static_assert(
+  std::is_same_v<
+    detail::io_uring_context::maybe_decay<int&>::type,
+    int&>);
+static_assert(
+  std::is_same_v<
+    detail::io_uring_context::maybe_decay<const int&>::type,
+    const int&>);
+
+static_assert(
+  detail::io_uring_context::nothrow_signature<
+    ::stdexec::set_value_t()>::value);
+static_assert(
+  detail::io_uring_context::nothrow_signature<
+    ::stdexec::set_value_t(int)>::value);
+static_assert(
+  detail::io_uring_context::nothrow_signature<
+    ::stdexec::set_value_t(int&&)>::value);
+static_assert(
+  detail::io_uring_context::nothrow_signature<
+    ::stdexec::set_value_t(const int&)>::value);
+static_assert(
+  !detail::io_uring_context::nothrow_signature<
+    ::stdexec::set_value_t(throwing_move)>::value);
+static_assert(
+  !detail::io_uring_context::nothrow_signature<
+    ::stdexec::set_value_t(throwing_move&&)>::value);
+static_assert(
+  detail::io_uring_context::nothrow_signature<
+    ::stdexec::set_value_t(const throwing_move&)>::value);
+static_assert(
+  detail::io_uring_context::nothrow_signature<
+    ::stdexec::set_stopped_t()>::value);
+static_assert(
+  detail::io_uring_context::nothrow_signature<
+    ::stdexec::set_error_t(std::exception_ptr)>::value);
+
+template<typename Predicate>
+void poll_until(detail::io_uring_context::base& base, Predicate pred) {
+  const auto timeout =
+    std::chrono::steady_clock::now() + std::chrono::seconds(1);
+  while (!pred()) {
+    if (base.need_wakeup()) {
+      std::error_code ec;
+      base.enter(
+        0,
+        0,
+        IORING_ENTER_SQ_WAKEUP,
+        nullptr,
+        0,
+        ec);
+      REQUIRE(!ec);
     }
+    REQUIRE(std::chrono::steady_clock::now() < timeout);
+  }
+}
 
-    jthread(jthread&& other) noexcept
-      : thread_(std::move(other.thread_)) {
-    }
+TEST_CASE("A single IORING_OP_NOP is submitted and completed in submission "
+  "queue polling mode", "[io_uring][io_uring_context]")
+{
+  detail::io_uring_context::base base(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
+  CHECK(base.try_submit([](::io_uring_sqe& sqe) noexcept {
+    std::memset(&sqe, 0, sizeof(sqe));
+    sqe.opcode = IORING_OP_NOP;
+  }));
+  poll_until(
+    base,
+    [&]() {
+      return base.try_complete([](const ::io_uring_cqe& cqe) {
+        CHECK(cqe.res == 0);
+      });
+    });
+}
 
-    auto operator=(jthread&& other) noexcept -> jthread& {
-      thread_ = std::move(other.thread_);
-      return *this;
-    }
-
-    ~jthread() {
-      if (thread_.joinable()) {
-        thread_.join();
+TEST_CASE("In submission queue polling mode IORING_OP_NOPs may be submitted "
+  "until the submission queue is full, thereafter they complete", "[io_uring][io_uring_context]")
+{
+  detail::io_uring_context::base base(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
+  std::size_t submitted = 0;
+  while (base.try_submit([](::io_uring_sqe& sqe) noexcept {
+    std::memset(&sqe, 0, sizeof(sqe));
+    sqe.opcode = IORING_OP_NOP;
+  })) {
+    ++submitted;
+  }
+  CHECK(submitted > 1);
+  std::size_t completed = 0;
+  poll_until(
+    base,
+    [&]() {
+      if (!base.try_complete([](const ::io_uring_cqe& cqe) {
+        CHECK(cqe.res == 0);
+      })) {
+        return false;
       }
-    }
+      ++completed;
+      return completed == submitted;
+    });
+  poll_until(
+    base,
+    [&]() noexcept {
+      return !base.try_submit([](::io_uring_sqe& sqe) noexcept {
+        std::memset(&sqe, 0, sizeof(sqe));
+        sqe.opcode = IORING_OP_NOP;
+      });
+    });
+  poll_until(
+    base,
+    [&]() {
+      return !base.try_complete([](const ::io_uring_cqe& cqe) {
+        CHECK(cqe.res == 0);
+      });
+    });
+}
 
-    [[nodiscard]]
-    auto get_id() const noexcept -> std::thread::id {
-      return thread_.get_id();
+TEST_CASE("When the kernel thread goes to sleep it can be awoken with "
+  "io_uring_enter", "[io_uring][io_uring_context]")
+{
+  detail::io_uring_context::base base(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 20;
+      return retr;
+    }());
+  CHECK(!base.need_wakeup());
+  const auto now = std::chrono::steady_clock::now();
+  while (!base.need_wakeup()) {
+    REQUIRE(std::chrono::steady_clock::now() < (now + std::chrono::seconds(1)));
+  }
+  std::error_code ec;
+  const auto submitted = base.enter(
+    0,
+    0,
+    IORING_ENTER_SQ_WAKEUP,
+    nullptr,
+    0,
+    ec);
+  while (!base.need_wakeup()) {
+    REQUIRE(std::chrono::steady_clock::now() < (now + std::chrono::seconds(1)));
+  }
+  REQUIRE(!ec);
+  CHECK(submitted == 0);
+}
+
+TEST_CASE("When the kernel thread goes to sleep it can be awoken with "
+  "io_uring_enter while also submitting I/O", "[io_uring][io_uring_context]")
+{
+  detail::io_uring_context::base base(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 20;
+      return retr;
+    }());
+  CHECK(!base.need_wakeup());
+  const auto now = std::chrono::steady_clock::now();
+  while (!base.need_wakeup()) {
+    REQUIRE(std::chrono::steady_clock::now() < (now + std::chrono::seconds(1)));
+  }
+  REQUIRE(base.try_submit([](::io_uring_sqe& sqe) noexcept {
+    std::memset(&sqe, 0, sizeof(sqe));
+    sqe.opcode = IORING_OP_NOP;
+  }));
+  std::error_code ec;
+  const auto submitted = base.enter(
+    1,
+    0,
+    IORING_ENTER_SQ_WAKEUP,
+    nullptr,
+    0,
+    ec);
+  while (!base.need_wakeup()) {
+    REQUIRE(std::chrono::steady_clock::now() < (now + std::chrono::seconds(1)));
+  }
+  REQUIRE(!ec);
+  CHECK(submitted == 1);
+}
+
+TEST_CASE("When the kernel thread goes to sleep it can be awoken with "
+  "io_uring_enter while also submitting and waiting for I/O", "[io_uring][io_uring_context]")
+{
+  detail::io_uring_context::base base(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 20;
+      return retr;
+    }());
+  CHECK(!base.need_wakeup());
+  const auto now = std::chrono::steady_clock::now();
+  while (!base.need_wakeup()) {
+    REQUIRE(std::chrono::steady_clock::now() < (now + std::chrono::seconds(1)));
+  }
+  REQUIRE(base.try_submit([](::io_uring_sqe& sqe) noexcept {
+    std::memset(&sqe, 0, sizeof(sqe));
+    sqe.opcode = IORING_OP_NOP;
+  }));
+  std::error_code ec;
+  const auto submitted = base.enter(
+    1,
+    1,
+    IORING_ENTER_SQ_WAKEUP | IORING_ENTER_GETEVENTS,
+    nullptr,
+    0,
+    ec);
+  while (!base.need_wakeup()) {
+    REQUIRE(std::chrono::steady_clock::now() < (now + std::chrono::seconds(1)));
+  }
+  REQUIRE(!ec);
+  CHECK(submitted == 1);
+  CHECK(base.try_complete([](const ::io_uring_cqe& cqe) {
+    CHECK(cqe.res == 0);
+  }));
+}
+
+TEST_CASE("When SQEs aren't available operations can be enqueued in an atomic, "
+  "intrusive linked list", "[io_uring][io_uring_context]")
+{
+  struct submittable : detail::io_uring_context::submittable {
+    virtual bool submit(::io_uring_sqe& sqe) noexcept override {
+      submitted = true;
+      std::memset(&sqe, 0, sizeof(sqe));
+      sqe.opcode = IORING_OP_NOP;
+      return true;
+    }
+    bool submitted{false};
+  };
+  submittable a;
+  submittable b;
+  detail::io_uring_context::with_submittable_queue<
+    detail::io_uring_context::base> ctx(
+      32,
+      []() noexcept {
+        ::io_uring_params retr{};
+        retr.flags = IORING_SETUP_SQPOLL;
+        retr.sq_thread_idle = 5000;
+        return retr;
+      }());
+  ctx.enqueue(a);
+  ctx.enqueue(b);
+  CHECK(!a.submitted);
+  CHECK(!b.submitted);
+  ctx.dequeue();
+  CHECK(a.submitted);
+  CHECK(b.submitted);
+  std::size_t completed = 0;
+  poll_until(
+    ctx,
+    [&]() {
+      (void)ctx.try_complete([&](const ::io_uring_cqe& cqe) {
+        CHECK(cqe.res == 0);
+        ++completed;
+      });
+      return completed == 2;
+    });
+}
+
+TEST_CASE("More tasks can be awaiting a SQE than there are SQEs (i.e. it's not "
+  "necessary that all pending tasks be submittable in a single shot",
+  "[io_uring][io_uring_context]")
+{
+  struct submittable : detail::io_uring_context::submittable {
+    virtual bool submit(::io_uring_sqe& sqe) noexcept override {
+      submitted = true;
+      std::memset(&sqe, 0, sizeof(sqe));
+      sqe.opcode = IORING_OP_NOP;
+      return true;
+    }
+    bool submitted{false};
+  };
+  std::vector<submittable> v(2048);
+  detail::io_uring_context::with_submittable_queue<
+    detail::io_uring_context::base> ctx(
+      32,
+      []() noexcept {
+        ::io_uring_params retr{};
+        retr.flags = IORING_SETUP_SQPOLL;
+        retr.sq_thread_idle = 5000;
+        return retr;
+      }());
+  for (auto&& task : v) {
+    ctx.enqueue(task);
+  }
+  const auto submitted = [](const submittable& s) noexcept {
+    return s.submitted;
+  };
+  CHECK(std::none_of(v.begin(), v.end(), submitted));
+  ctx.dequeue();
+  CHECK(std::any_of(v.begin(), v.end(), submitted));
+  CHECK(!std::all_of(v.begin(), v.end(), submitted));
+  std::size_t completed = 0;
+  poll_until(
+    ctx,
+    [&]() {
+      (void)ctx.try_complete([&](const ::io_uring_cqe& cqe) {
+        CHECK(cqe.res == 0);
+        ++completed;
+      });
+      ctx.dequeue();
+      return completed == v.size();
+    });
+}
+
+TEST_CASE("Scheduling works via the intrusive linked list of items awaiting "
+  "submission", "[io_uring][io_uring_context]")
+{
+  using context_type = detail::io_uring_context::with_scheduler<
+    detail::io_uring_context::with_submittable_queue<
+      detail::io_uring_context::base>>;
+  context_type ctx(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
+  const auto scheduler = ctx.get_scheduler();
+  CHECK(scheduler == ctx.get_scheduler());
+  {
+    context_type other(1, {});
+    CHECK(!(scheduler == other.get_scheduler()));
+    CHECK(scheduler != other.get_scheduler());
+  }
+  static_assert(::stdexec::scheduler<decltype(scheduler)>);
+  const auto sender = ::stdexec::schedule(scheduler);
+  using completion_signatures = ::stdexec::completion_signatures_of_t<
+    const decltype(sender)&,
+    ::stdexec::env<>>;
+  static_assert(
+    std::is_same_v<
+      completion_signatures,
+      ::stdexec::completion_signatures<
+        ::stdexec::set_value_t()>>);
+  std::atomic<bool> done{false};
+  auto op = ::stdexec::connect(
+    sender | ::stdexec::then([&]() noexcept {
+      done.store(true, std::memory_order_relaxed);
+    }),
+    expect_void_receiver<>{});
+  ::stdexec::start(op);
+  detail::io_uring_context::poll(ctx, done);
+}
+
+TEST_CASE("Simple, unstoppable I/O works", "[io_uring][io_uring_context]") {
+  auto [read, write] = []() {
+    int fds[2];
+    REQUIRE(::pipe(fds) != -1);
+    return std::pair(
+      exec::safe_file_descriptor(fds[0]),
+      exec::safe_file_descriptor(fds[1]));
+  }();
+  const unsigned to_write = 5;
+  auto prepare_write = [&](::io_uring_sqe& sqe) noexcept {
+    std::memset(&sqe, 0, sizeof(sqe));
+    sqe.opcode = IORING_OP_WRITE;
+    sqe.fd = write.native_handle();
+    sqe.off = -1;
+    sqe.addr = reinterpret_cast<decltype(sqe.addr)>(&to_write);
+    sqe.len = sizeof(to_write);
+  };
+  unsigned to_read = 0;
+  auto prepare_read = [&](::io_uring_sqe& sqe) noexcept {
+    std::memset(&sqe, 0, sizeof(sqe));
+    sqe.opcode = IORING_OP_READ;
+    sqe.fd = read.native_handle();
+    sqe.off = -1;
+    sqe.addr = reinterpret_cast<decltype(sqe.addr)>(&to_read);
+    sqe.len = sizeof(to_read);
+  };
+  using context_type = detail::io_uring_context::with_submittable_queue<
+    detail::io_uring_context::base>;
+  context_type ctx(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
+  detail::io_uring_context::io_sender<context_type, decltype(prepare_read)>
+    read_sender(ctx, prepare_read);
+  static_assert(detail::io_uring_context::unstoppable_env<::stdexec::env<>>);
+  static_assert(
+    std::is_same_v<
+      ::stdexec::completion_signatures_of_t<
+        decltype(read_sender),
+        ::stdexec::env<>>,
+      ::stdexec::completion_signatures<
+        ::stdexec::set_value_t(const ::io_uring_cqe&)>>);
+  static_assert(
+    std::is_same_v<
+      ::stdexec::completion_signatures_of_t<
+        const decltype(read_sender)&,
+        ::stdexec::env<>>,
+      ::stdexec::completion_signatures<
+        ::stdexec::set_value_t(const ::io_uring_cqe&)>>);
+  detail::io_uring_context::io_sender<context_type, decltype(prepare_write)>
+    write_sender(ctx, prepare_write);
+  static_assert(detail::io_uring_context::unstoppable_receiver<
+    expect_void_receiver<>>);
+  auto read_op = ::stdexec::connect(
+    read_sender | ::stdexec::then([](const ::io_uring_cqe& cqe) {
+      CHECK(cqe.res == sizeof(to_read));
+    }),
+    expect_void_receiver<>{});
+  auto write_op = ::stdexec::connect(
+    write_sender | ::stdexec::then([](const ::io_uring_cqe& cqe) {
+      CHECK(cqe.res == sizeof(to_write));
+    }),
+    expect_void_receiver<>{});
+  ::stdexec::start(read_op);
+  ::stdexec::start(write_op);
+  std::size_t completed = 0;
+  poll_until(
+    ctx,
+    [&]() {
+      (void)ctx.try_complete([&](const ::io_uring_cqe& cqe) {
+        REQUIRE(cqe.user_data);
+        auto&& c = *reinterpret_cast<detail::io_uring_context::completable*>(
+          cqe.user_data);
+        c.complete(cqe);
+        ++completed;
+      });
+      ctx.dequeue();
+      return completed >= 2;
+    });
+  CHECK(completed == 2);
+  CHECK(to_read == to_write);
+}
+
+TEST_CASE("Stoppable I/O can be stopped", "[io_uring][io_uring_context]") {
+  auto [read, write] = []() {
+    int fds[2];
+    REQUIRE(::pipe(fds) != -1);
+    return std::pair(
+      exec::safe_file_descriptor(fds[0]),
+      exec::safe_file_descriptor(fds[1]));
+  }();
+  unsigned to_read = 0;
+  auto prepare = [&](::io_uring_sqe& sqe) noexcept {
+    std::memset(&sqe, 0, sizeof(sqe));
+    sqe.opcode = IORING_OP_READ;
+    sqe.fd = read.native_handle();
+    sqe.off = -1;
+    sqe.addr = reinterpret_cast<decltype(sqe.addr)>(&to_read);
+    sqe.len = sizeof(to_read);
+  };
+  ::stdexec::inplace_stop_source source;
+  struct env {
+    auto query(const ::stdexec::get_stop_token_t&) const noexcept {
+      return source_.get_token();
+    }
+    ::stdexec::inplace_stop_source& source_;
+  };
+  using context_type = detail::io_uring_context::with_submittable_queue<
+    detail::io_uring_context::base>;
+  context_type ctx(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
+  detail::io_uring_context::io_sender<context_type, decltype(prepare)> sender(
+    ctx,
+    prepare);
+  static_assert(!detail::io_uring_context::unstoppable_env<env>);
+  static_assert(
+    set_equivalent<
+      ::stdexec::completion_signatures_of_t<
+        decltype(sender),
+        env>,
+      ::stdexec::completion_signatures<
+        ::stdexec::set_value_t(const ::io_uring_cqe&),
+        ::stdexec::set_stopped_t()>>);
+  static_assert(
+    set_equivalent<
+      ::stdexec::completion_signatures_of_t<
+        const decltype(sender)&,
+        env>,
+      ::stdexec::completion_signatures<
+        ::stdexec::set_value_t(const ::io_uring_cqe&),
+        ::stdexec::set_stopped_t()>>);
+  static_assert(!detail::io_uring_context::unstoppable_receiver<
+    expect_stopped_receiver<env>>);
+  bool stopped = false;
+  auto op = ::stdexec::connect(
+    sender | ::stdexec::let_stopped([&]() {
+      CHECK(!stopped);
+      stopped = true;
+      return ::stdexec::just_stopped();
+    }),
+    expect_stopped_receiver<env>(env{source}));
+  ::stdexec::start(op);
+  source.request_stop();
+  poll_until(
+    ctx,
+    [&]() {
+      (void)ctx.try_complete([&](const ::io_uring_cqe& cqe) {
+        REQUIRE(cqe.user_data);
+        auto&& c = *reinterpret_cast<detail::io_uring_context::completable*>(
+          cqe.user_data);
+        c.complete(cqe);
+      });
+      ctx.dequeue();
+      return stopped;
+    });
+}
+
+TEST_CASE("Stoppable I/O works", "[io_uring][io_uring_context]") {
+  auto [read, write] = []() {
+    int fds[2];
+    REQUIRE(::pipe(fds) != -1);
+    return std::pair(
+      exec::safe_file_descriptor(fds[0]),
+      exec::safe_file_descriptor(fds[1]));
+  }();
+  const unsigned to_write = 5;
+  unsigned to_read = 0;
+  ::stdexec::inplace_stop_source source;
+  struct env {
+    auto query(const ::stdexec::get_stop_token_t&) const noexcept {
+      return source_.get_token();
+    }
+    ::stdexec::inplace_stop_source& source_;
+  };
+  io_uring_context ctx(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
+  std::atomic<bool> done{false};
+  std::size_t completed = 0;
+  const auto finish = [&]() noexcept {
+    ++completed;
+    if (completed == 2) {
+      done.store(true, std::memory_order_relaxed);
     }
   };
-
-  TEST_CASE("io_uring_context - unused context", "[types][io_uring][schedulers]") {
-    io_uring_context context;
-    CHECK(context.is_running() == false);
-  }
-
-  TEST_CASE("io_uring_context Satisfy concepts", "[types][io_uring][schedulers]") {
-    STATIC_REQUIRE(timed_scheduler<io_uring_scheduler>);
-    STATIC_REQUIRE_FALSE(std::is_move_assignable_v<io_uring_context>);
-  }
-
-  TEST_CASE("io_uring_context Schedule runs in io thread", "[types][io_uring][schedulers]") {
-    io_uring_context context;
-    io_uring_scheduler scheduler = context.get_scheduler();
-    jthread io_thread{[&] { context.run_until_stopped(); }};
-    {
-      scope_guard guard{[&]() noexcept { context.request_stop(); }};
-      bool is_called = false;
-      sync_wait(schedule(scheduler) | then([&] {
-                  CHECK(io_thread.get_id() == std::this_thread::get_id());
-                  is_called = true;
-                }));
-      CHECK(is_called);
-
-      is_called = false;
-      sync_wait(schedule_after(scheduler, 1ms) | then([&] {
-                  CHECK(io_thread.get_id() == std::this_thread::get_id());
-                  is_called = true;
-                }));
-      CHECK(is_called);
-    }
-  }
-
-  TEST_CASE(
-    "io_uring_context Call io_uring::run_until_empty with start_detached",
-    "[types][io_uring][schedulers]") {
-    io_uring_context context;
-    io_uring_scheduler scheduler = context.get_scheduler();
-    bool is_called = false;
-    start_detached(schedule(scheduler) | then([&] {
-                     CHECK(context.is_running());
-                     is_called = true;
-                   }));
-    context.run_until_empty();
-    CHECK(is_called);
-    CHECK(!context.is_running());
-    CHECK(!context.stop_requested());
-  }
-
-  TEST_CASE(
-    "io_uring_context Call now(io_uring) is running clock",
-    "[types][io_uring][schedulers]") {
-    io_uring_context context;
-    io_uring_scheduler scheduler = context.get_scheduler();
-    auto start = now(scheduler);
-    std::this_thread::sleep_for(10ms);
-    CHECK(start + 10ms <= now(scheduler));
-  }
-
-  TEST_CASE(
-    "io_uring_context Call io_uring::run_until_empty with sync_wait",
-    "[types][io_uring][schedulers]") {
-    io_uring_context context;
-    io_uring_scheduler scheduler = context.get_scheduler();
-    auto just_run = just() | then([&] { context.run_until_empty(); });
-    bool is_called = false;
-    sync_wait(when_all(
-      schedule_after(scheduler, 500us) | then([&] {
-        CHECK(context.is_running());
-        is_called = true;
+  auto write_op = ::stdexec::connect(
+    finally(
+      ctx.io([&](::io_uring_sqe& sqe) noexcept {
+        std::memset(&sqe, 0, sizeof(sqe));
+        sqe.opcode = IORING_OP_WRITE;
+        sqe.fd = write.native_handle();
+        sqe.off = -1;
+        sqe.addr = reinterpret_cast<decltype(sqe.addr)>(&to_write);
+        sqe.len = sizeof(to_write);
+      }) | ::stdexec::then([&](const ::io_uring_cqe& cqe) {
+        CHECK(cqe.res == sizeof(to_write));
       }),
-      just_run));
-    CHECK(is_called);
-    CHECK(!context.is_running());
-    CHECK(!context.stop_requested());
-  }
-
-  TEST_CASE(
-    "io_uring_context Call io_uring::run with sync_wait and when_any",
-    "[types][io_uring][schedulers]") {
-    io_uring_context context;
-    io_uring_scheduler scheduler = context.get_scheduler();
-    bool is_called = false;
-    sync_wait(when_any(
-      schedule_after(scheduler, 500us) | then([&] {
-        CHECK(context.is_running());
-        is_called = true;
+      ::stdexec::just() | ::stdexec::then(finish)),
+    expect_void_receiver(env{source}));
+  auto read_op = ::stdexec::connect(
+    finally(
+      ctx.io([&](::io_uring_sqe& sqe) noexcept {
+        std::memset(&sqe, 0, sizeof(sqe));
+        sqe.opcode = IORING_OP_READ;
+        sqe.fd = read.native_handle();
+        sqe.off = -1;
+        sqe.addr = reinterpret_cast<decltype(sqe.addr)>(&to_read);
+        sqe.len = sizeof(to_read);
+      }) | ::stdexec::then([&](const ::io_uring_cqe& cqe) {
+        CHECK(cqe.res == sizeof(to_read));
       }),
-      context.run()));
-    CHECK(is_called);
-    CHECK(!context.is_running());
-    CHECK(context.stop_requested());
-  }
+      ::stdexec::just() | ::stdexec::then(finish)),
+    expect_void_receiver(env{source}));
+  ::stdexec::start(write_op);
+  ::stdexec::start(read_op);
+  detail::io_uring_context::poll(ctx, done);
+  CHECK(to_read == to_write);
+}
 
-  TEST_CASE(
-    "io_uring_context Call io_uring::run with sync_wait and when_all",
-    "[types][io_uring][schedulers]") {
-    io_uring_context context;
-    io_uring_scheduler scheduler = context.get_scheduler();
-    bool is_called = false;
-    sync_wait(when_all(
-      schedule_after(scheduler, 500us) | then([&] {
-        CHECK(context.is_running());
-        is_called = true;
-      }),
-      context.run(until::empty)));
-    CHECK(is_called);
-    CHECK(!context.is_running());
-    CHECK(!context.stop_requested());
-  }
-
-  TEST_CASE(
-    "io_uring_context Explicitly stop the io_uring_context",
-    "[types][io_uring][schedulers]") {
-    io_uring_context context;
-    io_uring_scheduler scheduler = context.get_scheduler();
-    {
-      bool is_called = false;
-      start_detached(schedule(scheduler) | then([&] {
-                       CHECK(context.is_running());
-                       is_called = true;
-                     }));
-      context.run_until_empty();
-      CHECK(is_called);
-      CHECK(!context.is_running());
-      CHECK(!context.stop_requested());
-    }
-    context.request_stop();
-    CHECK(context.stop_requested());
-    context.run_until_stopped();
-    CHECK(context.stop_requested());
-    bool is_stopped = false;
-    sync_wait(schedule(scheduler) | then([&] { CHECK(false); }) | stdexec::upon_stopped([&] {
-                is_stopped = true;
-              }));
-    CHECK(is_stopped);
-  }
-
-  TEST_CASE(
-    "io_uring_context Thread-safe to schedule from multiple threads",
-    "[types][io_uring][schedulers]") {
-    io_uring_context context;
-    io_uring_scheduler scheduler = context.get_scheduler();
-    jthread io_thread{[&] { context.run_until_stopped(); }};
-    auto fn = [&] {
-      CHECK(io_thread.get_id() == std::this_thread::get_id());
+TEST_CASE("Stopping I/O works with run_on_polled_io_uring", "[io_uring][io_uring_context]") {
+  auto [read, write] = []() {
+    int fds[2];
+    REQUIRE(::pipe(fds) != -1);
+    return std::pair(
+      exec::safe_file_descriptor(fds[0]),
+      exec::safe_file_descriptor(fds[1]));
+  }();
+  unsigned to_read = 0;
+  ::stdexec::inplace_stop_source source;
+  auto sender = run_on_polled_io_uring(
+    [&](io_uring_context& ctx) {
+      return ctx.io([&](::io_uring_sqe& sqe) noexcept {
+        std::memset(&sqe, 0, sizeof(sqe));
+        sqe.opcode = IORING_OP_READ;
+        sqe.fd = read.native_handle();
+        sqe.off = -1;
+        sqe.addr = reinterpret_cast<decltype(sqe.addr)>(&to_read);
+        sqe.len = sizeof(to_read);
+      }) | ::stdexec::then([](const ::io_uring_cqe&) {
+        FAIL("Operation should end with set_stopped");
+      }) | ::exec::write_env(
+        ::stdexec::prop(
+          ::stdexec::get_stop_token,
+          source.get_token()));
+    },
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
+  {
+    struct env {
+      auto query(const ::stdexec::get_stop_token_t&) const noexcept {
+        return source_.get_token();
+      }
+      ::stdexec::inplace_stop_source& source_;
     };
-    {
-      scope_guard guard{[&]() noexcept { context.request_stop(); }};
-      jthread thread1{[&] {
-        for (int i = 0; i < 10; ++i) {
-          sync_wait(when_all(
-            schedule(scheduler) | then(fn),
-            schedule(scheduler) | then(fn),
-            schedule(scheduler) | then(fn),
-            schedule(scheduler) | then(fn),
-            schedule(scheduler) | then(fn),
-            schedule(scheduler) | then(fn),
-            schedule(scheduler) | then(fn),
-            schedule(scheduler) | then(fn),
-            schedule(scheduler) | then(fn),
-            schedule(scheduler) | then(fn)));
-        }
-      }};
-      jthread thread2{[&] {
-        for (int i = 0; i < 10; ++i) {
-          auto tp = std::chrono::steady_clock::now() + 500us;
-          sync_wait(when_all(
-            schedule_at(scheduler, tp) | then(fn),
-            schedule_at(scheduler, tp) | then(fn),
-            schedule_at(scheduler, tp) | then(fn),
-            schedule_at(scheduler, tp) | then(fn),
-            schedule_at(scheduler, tp) | then(fn),
-            schedule_at(scheduler, tp) | then(fn),
-            schedule_at(scheduler, tp) | then(fn),
-            schedule_at(scheduler, tp) | then(fn),
-            schedule_at(scheduler, tp) | then(fn),
-            schedule_at(scheduler, tp) | then(fn)));
-        }
-      }};
-      jthread thread3{[&] {
-        for (int i = 0; i < 10; ++i) {
-          sync_wait(when_all(
-            schedule_after(scheduler, 500us) | then(fn),
-            schedule_after(scheduler, 500us) | then(fn),
-            schedule_after(scheduler, 500us) | then(fn),
-            schedule_after(scheduler, 500us) | then(fn),
-            schedule_after(scheduler, 500us) | then(fn),
-            schedule_after(scheduler, 500us) | then(fn),
-            schedule_after(scheduler, 500us) | then(fn),
-            schedule_after(scheduler, 500us) | then(fn),
-            schedule_after(scheduler, 500us) | then(fn),
-            schedule_after(scheduler, 500us) | then(fn)));
-        }
-      }};
-    }
+    static_assert(
+      set_equivalent<
+        ::stdexec::completion_signatures_of_t<
+          decltype(sender),
+          env>,
+        ::stdexec::completion_signatures<
+          ::stdexec::set_value_t(),
+          ::stdexec::set_stopped_t(),
+          //  This is added by ::stdexec::then because our lambda isn't noexcept
+          ::stdexec::set_error_t(std::exception_ptr)>>);
+    static_assert(
+      set_equivalent<
+        ::stdexec::completion_signatures_of_t<
+          const decltype(sender)&,
+          env>,
+        ::stdexec::completion_signatures<
+          ::stdexec::set_value_t(),
+          ::stdexec::set_stopped_t(),
+          ::stdexec::set_error_t(std::exception_ptr)>>);
   }
+  source.request_stop();
+  CHECK(!::stdexec::sync_wait(std::move(sender)));
+}
 
-  TEST_CASE("io_uring_context Stop io_uring_context", "[types][io_uring][schedulers]") {
-    io_uring_context context;
-    io_uring_scheduler scheduler = context.get_scheduler();
-    jthread io_thread{[&] { context.run_until_stopped(); }};
-    {
-      single_thread_context ctx1{};
-      auto sch1 = ctx1.get_scheduler();
-      bool is_called = false;
-      sync_wait(finally(
-        schedule(scheduler) | then([&]() noexcept { is_called = true; }),
-        schedule(sch1) | then([&]() noexcept { context.request_stop(); })));
-      CHECK(is_called);
-    }
-    bool is_called = false;
-    sync_wait(schedule(scheduler) | then([&] { is_called = true; }));
-    CHECK_FALSE(is_called);
-  }
-
-  TEST_CASE("io_uring_context schedule_after 0s", "[types][io_uring][schedulers]") {
-    io_uring_context context;
-    io_uring_scheduler scheduler = context.get_scheduler();
-    jthread io_thread{[&] { context.run_until_stopped(); }};
-    {
-      scope_guard guard{[&]() noexcept { context.request_stop(); }};
-      bool is_called = false;
-      sync_wait(when_any(
-        schedule_after(scheduler, 0s) | then([&] {
-          CHECK(io_thread.get_id() == std::this_thread::get_id());
-          is_called = true;
-        }),
-        schedule_after(scheduler, 5ms)));
-      CHECK(is_called);
-    }
-  }
-
-  TEST_CASE("io_uring_context schedule_after -1s", "[types][io_uring][schedulers]") {
-    io_uring_context context;
-    io_uring_scheduler scheduler = context.get_scheduler();
-    jthread io_thread{[&] { context.run_until_stopped(); }};
-    {
-      scope_guard guard{[&]() noexcept { context.request_stop(); }};
-      bool is_called_1 = false;
-      bool is_called_2 = false;
-      auto start = std::chrono::steady_clock::now();
-      auto timeout = 100ms;
-      sync_wait(when_any(
-        schedule_after(scheduler, -1s) | then([&] {
-          CHECK(io_thread.get_id() == std::this_thread::get_id());
-          is_called_1 = true;
-        }),
-        schedule_after(scheduler, timeout) | then([&] { is_called_2 = true; })));
-      auto end = std::chrono::steady_clock::now();
-      std::chrono::nanoseconds diff = end - start;
-      CHECK(diff.count() < std::chrono::duration_cast<std::chrono::nanoseconds>(timeout).count());
-      CHECK(is_called_1 == true);
-      CHECK(is_called_2 == false);
-    }
-  }
-
-  TEST_CASE("io_uring_context - reuse context after being used", "[types][io_uring][schedulers]") {
-    io_uring_context context;
-    io_uring_scheduler scheduler = context.get_scheduler();
-    CHECK(sync_wait(exec::when_any(schedule(scheduler), context.run())));
-    CHECK(!sync_wait(exec::when_any(schedule(scheduler), context.run())));
-    context.reset();
-    CHECK(sync_wait(exec::when_any(schedule(scheduler), context.run())));
-    CHECK(!sync_wait(exec::when_any(schedule(scheduler), context.run())));
-  }
 } // namespace
-
-#endif
