@@ -1,0 +1,234 @@
+/*
+ * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ *                         Copyright (c) 2025 Robert Leahy. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+ *
+ * Licensed under the Apache License, Version 2.0 with LLVM Exceptions (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * https://llvm.org/LICENSE.txt
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#pragma once
+
+#include "../stdexec/execution.hpp"
+
+#include <exception>
+#include <functional>
+#include <tuple>
+#include <type_traits>
+#include <variant>
+
+namespace exec {
+
+namespace detail::storage_for_completion_signatures {
+
+template<typename T>
+struct decay {
+  using type = std::decay_t<T>;
+};
+template<typename T>
+struct decay<T&> {
+  using type = T&;
+};
+
+template<typename>
+struct tuple_for_signature;
+
+template<typename Tag, typename... Args>
+struct tuple_for_signature<Tag(Args...)> {
+  using type = std::tuple<Tag, typename decay<Args>::type...>;
+};
+
+template<typename>
+struct variant_for_signatures;
+
+template<typename... Signatures>
+struct variant_for_signatures<
+  ::stdexec::completion_signatures<Signatures...>>
+{
+  using type = std::variant<
+    std::monostate,
+    typename tuple_for_signature<Signatures>::type...>;
+};
+
+template<typename>
+struct signature;
+
+template<typename Tag, typename... Args>
+struct signature<Tag(Args...)> {
+  using type = Tag(typename decay<Args>::type...);
+};
+
+template<typename, typename>
+struct nothrow_visitable;
+
+template<typename Visitor, typename Tag, typename... Args>
+struct nothrow_visitable<Visitor, Tag(Args...)> {
+  static constexpr bool value = std::is_nothrow_invocable_v<
+    Visitor,
+    Tag,
+    typename decay<Args>::type...>;
+};
+
+template<typename>
+struct nothrow_storable;
+
+template<typename Tag, typename... Args>
+struct nothrow_storable<Tag(Args...)> {
+  static constexpr bool value = (
+    std::is_nothrow_constructible_v<
+      typename decay<Args>::type,
+      Args> && ...);
+};
+
+}
+
+template<typename>
+class storage_for_completion_signatures;
+
+template<>
+class storage_for_completion_signatures<::stdexec::completion_signatures<>> {
+public:
+  using completion_signatures = ::stdexec::completion_signatures<>;
+  template<typename Visitor>
+  constexpr bool visit(Visitor&&) && noexcept {
+    return false;
+  }
+  template<::stdexec::receiver Receiver>
+  [[noreturn]]
+  constexpr void complete(Receiver&&) && noexcept {
+    STDEXEC_UNREACHABLE();
+  }
+};
+
+template<typename... Signatures>
+class storage_for_completion_signatures<
+  ::stdexec::completion_signatures<Signatures...>>
+{
+  using base_signatures_ = ::stdexec::completion_signatures<
+    typename detail::storage_for_completion_signatures::signature<
+      Signatures>::type...>;
+  static constexpr auto noexcept_ =
+    (detail::storage_for_completion_signatures::nothrow_storable<
+      Signatures>::value && ...);
+  using maybe_throwing_signature_ = std::conditional_t<
+    noexcept_,
+    ::stdexec::completion_signatures<>,
+    ::stdexec::completion_signatures<
+      ::stdexec::set_error_t(std::exception_ptr)>>;
+public:
+  using completion_signatures = ::stdexec::transform_completion_signatures<
+    base_signatures_,
+    maybe_throwing_signature_>;
+private:
+  template<typename Signature>
+  using tuple_type_ =
+    typename detail::storage_for_completion_signatures::tuple_for_signature<
+      Signature>::type;
+  using storage_type_ =
+    typename detail::storage_for_completion_signatures::variant_for_signatures<
+      completion_signatures>::type;
+  storage_type_ storage_;
+  template<typename Visitor>
+  static constexpr bool nothrow_visitable_ = (
+    detail::storage_for_completion_signatures::nothrow_visitable<
+      Visitor,
+      Signatures>::value && ...);
+public:
+  template<typename Tag, typename... Args>
+    requires std::is_constructible_v<
+      storage_type_,
+      std::in_place_type_t<tuple_type_<Tag(Args...)>>,
+      Tag,
+      Args...>
+  constexpr void arrive(Tag t, Args&&... args) noexcept {
+    STDEXEC_ASSERT(std::holds_alternative<std::monostate>(storage_));
+    constexpr auto nothrow = std::is_nothrow_constructible_v<
+      tuple_type_<Tag(Args...)>,
+      Tag,
+      Args...>;
+    const auto impl = [&]() noexcept(nothrow) {
+      storage_.template emplace<tuple_type_<Tag(Args...)>>(
+        (Tag&&)t,
+        (Args&&)args...);
+    };
+    if constexpr (nothrow) {
+      impl();
+    } else {
+      try {
+        impl();
+      } catch (...) {
+        storage_.template emplace<
+          std::tuple<
+            ::stdexec::set_error_t,
+            std::exception_ptr>>(
+              ::stdexec::set_error,
+              std::current_exception());
+      }
+    }
+  }
+  template<typename Visitor>
+  constexpr bool visit(Visitor&& visitor) noexcept(nothrow_visitable_<Visitor>)
+  {
+    return std::visit(
+      [&](auto&& tuple_or_monostate) noexcept(nothrow_visitable_<Visitor>) {
+        if constexpr (std::is_same_v<
+          std::monostate,
+          std::remove_cvref_t<decltype(tuple_or_monostate)>>)
+        {
+          return false;
+        } else {
+          std::apply(
+            (Visitor&&)visitor,
+            (decltype(tuple_or_monostate)&&)tuple_or_monostate);
+          return true;
+        }
+      },
+      (storage_type_&&)storage_);
+  }
+  template<::stdexec::receiver_of<completion_signatures> Receiver>
+  constexpr void complete(Receiver&& r) && noexcept {
+    const auto visited = visit([&](auto tag, auto&&... args) noexcept {
+      const auto impl = [&]() noexcept(noexcept_) {
+        //  Odds are this is inside an operation state, which means that sending
+        //  the completion signal may end our lifetime, which means we shouldn't
+        //  send references into ourselves, therefore we move all the non-
+        //  references onto the stack
+        std::tuple<
+          typename detail::storage_for_completion_signatures::decay<
+            decltype(args)>::type...> t(
+              (decltype(args)&&)args...);
+        std::apply(
+          [&](auto&&... args) noexcept {
+            tag((Receiver&&)r, (decltype(args)&&)args...);
+          },
+          std::move(t));
+      };
+      if constexpr (noexcept_) {
+        impl();
+      } else {
+        try {
+          impl();
+        } catch (...) {
+          ::stdexec::set_error(
+            (Receiver&&)r,
+            std::current_exception());
+        }
+      }
+    });
+    STDEXEC_ASSERT(visited);
+    if (!visited) {
+      STDEXEC_UNREACHABLE();
+    }
+  }
+};
+
+} // namespace exec
