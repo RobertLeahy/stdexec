@@ -18,6 +18,7 @@ set(asioexec_test_sources
     ../test_main.cpp
     test_completion_token.cpp
     test_let_io_context.cpp
+    test_playground.cpp
     test_use_sender.cpp
     )
 

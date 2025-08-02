@@ -411,7 +411,7 @@ set(SYSTEM_CONTEXT_SOURCES src/system_context/system_context.cpp)
 add_library(system_context ${SYSTEM_CONTEXT_SOURCES})
 target_compile_features(system_context PUBLIC cxx_std_20)
 set_target_properties(system_context PROPERTIES
-    CXX_STANDARD 20
+    CXX_STANDARD 23
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF)
 target_compile_options(system_context PUBLIC
