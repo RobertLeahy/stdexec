@@ -6,6 +6,7 @@
 #include "../test_common/receivers.hpp"
 
 #include <atomic>
+#include <barrier>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -15,6 +16,7 @@
 #include <optional>
 #include <ranges>
 #include <stdexcept>
+#include <thread>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -54,15 +56,17 @@ struct completion_handler {
     if (!self_) {
       return;
     }
-    const std::lock_guard l(self_->state_->m_);
-    if (!--self_->state_->outstanding_) {
-      self_->complete_();
+    std::unique_lock l(self_->state_->m_);
+    if (self_->state_->should_complete_(l)) {
+      self_->complete_(l);
     }
   }
   template<typename... Ts>
   constexpr void operator()(Ts&&... ts) noexcept {
-    const std::lock_guard l(self_->state_->m_);
-    self_->state_->complete_ = true;
+    {
+      const std::lock_guard l(self_->state_->m_);
+      self_->state_->complete_ = true;
+    }
     self_->callback_.reset();
     auto&& r = self_->r_;
     self_ = nullptr;
@@ -82,26 +86,26 @@ struct executor {
   template<typename F>
   void execute(F f) const noexcept {
     const auto ptr = self_.state_;
-    const std::lock_guard l(ptr->m_);
+    std::unique_lock l(ptr->m_);
     ++ptr->outstanding_;
     try {
       ex_.execute([&self = self_, f = std::move(f), ptr]() mutable noexcept {
-        const std::lock_guard l(ptr->m_);
+        std::unique_lock l(ptr->m_);
         ++ptr->outstanding_;
         try {
           std::move(f)();
         } catch (...) {
           self.ex_ = std::current_exception();
         }
-        if (!ptr->complete_ && !--ptr->outstanding_) {
-          self.complete_();
+        if (ptr->should_complete_(l)) {
+          self.complete_(l);
         }
       });
     } catch (...) {
       self_.ex_ = std::current_exception();
     }
-    if (!ptr->complete_ && !--ptr->outstanding_) {
-      self_.complete_();
+    if (ptr->should_complete_(l)) {
+      self_.complete_(l);
     }
   }
   template<typename... Args>
@@ -125,7 +129,7 @@ struct state {
   //  One for the completion handler, one for start
   std::size_t outstanding_{2};
   bool complete_{false};
-  bool should_complete_() noexcept {
+  bool should_complete_(const std::unique_lock<std::recursive_mutex>&) noexcept {
     return !complete_ && !--outstanding_;
   }
 };
@@ -154,7 +158,7 @@ struct operation {
   using operation_state_concept = ::stdexec::operation_state_t;
   void start() & noexcept {
     const auto ptr = state_;
-    const std::lock_guard l(ptr->m_);
+    std::unique_lock l(ptr->m_);
     try {
       std::invoke(
         std::move(init_),
@@ -166,7 +170,7 @@ struct operation {
       return;
     }
     if (!--ptr->outstanding_) {
-      complete_(); 
+      complete_(l);
       return;
     }
     callback_.emplace(
@@ -174,7 +178,10 @@ struct operation {
         ::stdexec::get_env(r_)),
       on_stop_request_{*this});
   }
-  void complete_() noexcept {
+  void complete_(std::unique_lock<std::recursive_mutex>& l) noexcept {
+    state_->complete_ = true;
+    l.unlock();
+    callback_.reset();
     if (ex_) {
       ::stdexec::set_error(std::move(r_), std::move(ex_));
       return;
@@ -525,6 +532,109 @@ namespace {
     source.request_stop();
     ::stdexec::start(op);
     ctx.run();
+  }
+
+  TEST_CASE(
+    "Abandoned by initiating function",
+    "[asioexec][use_sender]") {
+    const auto initiating_function = []<typename CompletionToken>(CompletionToken&& token) {
+      return asio_impl::async_initiate<CompletionToken, void()>(
+        [](auto&& ...) {},
+        token);
+    };
+    auto sender = initiating_function(completion_token);
+    auto ptr = connect_shared(
+      std::move(sender),
+      expect_stopped_receiver{});
+    start_shared(std::move(ptr));
+  }
+
+  TEST_CASE(
+    "Cancelled during abandonment",
+    "[asioexec][use_sender]") {
+    bool stopped = false;
+    asio_impl::io_context ctx;
+    std::barrier barrier(2);
+    const auto initiating_function = [&]<typename CompletionToken>(CompletionToken&& token) {
+      return asio_impl::async_initiate<CompletionToken, void()>(
+        [&](auto h) {
+          const auto ex = asio_impl::get_associated_executor(h, ctx.get_executor());
+          asio_impl::post(ex, [&barrier, h = std::move(h)]() mutable {
+            barrier.arrive_and_wait();
+            barrier.arrive_and_wait();
+            auto local = std::move(h);
+            //  Abandoning
+            (void)local;
+          });
+        },
+        token);
+    };
+    ::stdexec::inplace_stop_source source;
+    auto sender = initiating_function(completion_token);
+    {
+      auto ptr = connect_shared(
+        std::move(sender) | ::stdexec::upon_stopped([&]() noexcept {
+          stopped = true;
+        }),
+        expect_void_receiver(
+          ::stdexec::prop(
+            ::stdexec::get_stop_token,
+            source.get_token())));
+      std::thread t([&]() noexcept {
+        barrier.arrive_and_wait();
+        (void)barrier.arrive();
+        source.request_stop();
+      });
+      start_shared(std::move(ptr));
+      CHECK(ctx.run() != 0);
+      //  Just in case
+      (void)barrier.arrive();
+      t.join();
+      CHECK(stopped);
+    }
+  }
+
+  TEST_CASE(
+    "Cancelled during completion",
+    "[asioexec][use_sender]") {
+    bool complete = false;
+    asio_impl::io_context ctx;
+    std::barrier barrier(2);
+    const auto initiating_function = [&]<typename CompletionToken>(CompletionToken&& token) {
+      return asio_impl::async_initiate<CompletionToken, void()>(
+        [&](auto h) {
+          const auto ex = asio_impl::get_associated_executor(h, ctx.get_executor());
+          asio_impl::post(ex, [&barrier, h = std::move(h)]() mutable {
+            barrier.arrive_and_wait();
+            barrier.arrive_and_wait();
+            std::move(h)();
+          });
+        },
+        token);
+    };
+    ::stdexec::inplace_stop_source source;
+    auto sender = initiating_function(completion_token);
+    {
+      auto ptr = connect_shared(
+        std::move(sender) | ::stdexec::then([&]() noexcept {
+          complete = true;
+        }),
+        expect_void_receiver(
+          ::stdexec::prop(
+            ::stdexec::get_stop_token,
+            source.get_token())));
+      std::thread t([&]() noexcept {
+        barrier.arrive_and_wait();
+        (void)barrier.arrive();
+        source.request_stop();
+      });
+      start_shared(std::move(ptr));
+      CHECK(ctx.run() != 0);
+      //  Just in case
+      (void)barrier.arrive();
+      t.join();
+      CHECK(complete);
+    }
   }
 
 } // namespace
