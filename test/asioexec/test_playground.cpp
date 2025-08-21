@@ -1,21 +1,3 @@
-/*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- *                         Copyright (c) 2025 Robert Leahy. All rights reserved.
- * SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
- *
- * Licensed under the Apache License, Version 2.0 with LLVM Exceptions (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * https://llvm.org/LICENSE.txt
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
 #include <asioexec/asio_config.hpp>
 
 #include <catch2/catch.hpp>
@@ -56,90 +38,8 @@ using transform_signatures = ::stdexec::completion_signatures<
   ::stdexec::set_error_t(std::exception_ptr),
   ::stdexec::set_stopped_t()>;
 
-//template<typename Signatures, typename Initiation, typename... Args>
-//struct completion_signatures;
-//template<typename... Signatures, typename Initiation, typename... Args>
-//struct completion_signatures<
-//  ::stdexec::completion_signatures<Signatures...>,
-//  Initiation,
-//  Args...>
-//{
-//  using type = ::stdexec::completion_signatures<
-//    Signatures...,
-//    ::stdexec::set_error_t(std::exception_ptr)>;
-//};
-//template<typename... Signatures, typename Initiation, typename... Args>
-//  requires std::is_nothrow_invocable_v<Initiation, Args...>
-//struct completion_signatures<
-//  ::stdexec::completion_signatures<Signatures...>,
-//  Initiation,
-//  Args...>
-//{
-//  using type = ::stdexec::completion_signatures<
-//    Signatures...>;
-//};
-
-//template<typename Receiver, typename Initiation>
-//struct operation {
-//  Receiver r_;
-//  Initiation init_;
-//  using operation_state_concept = ::stdexec::operation_state_t;
-//  void start() & noexcept {
-//    std::invoke(
-//      std::move(init_),
-//      [this](auto&&... args) noexcept {
-//        ::stdexec::set_value(std::move(r_), std::forward<decltype(args)>(args)...);
-//      });
-//  }
-//};
-
 template<typename, typename>
 struct operation;
-
-//template<typename Receiver, typename Initiation>
-//struct on_stop_request {
-//  void operator()() && noexcept {
-//    signal_.emit(asio_impl::cancellation_type::all);
-//  }
-//};
-
-//template<typename Token>
-//using stop_callback_t = ::stdexec::stop_callback_for_t<
-//  Token,
-//  on_stop_request>;
-
-//template<typename H>
-//class cancellation_wrapper {
-//  H h_;
-//public:
-//  template<typename... Args>
-//    requires std::is_constructible_v<H, Args...>
-//  constexpr explicit cancellation_wrapper(H*& h, Args&&... args) noexcept(
-//    std::is_nothrow_constructible_v<H, Args...>)
-//    : h_(std::forward<Args>(args)...)
-//  {
-//    h = std::addressof(h_);
-//  }
-//  cancellation_wrapper(const cancellation_wrapper&) = delete;
-//  cancellation_wrapper& operator=(const cancellation_wrapper&) = delete;
-//  template<typename Self>
-//  constexpr void operator()(this Self&& self) noexcept {
-//    std::invoke(std::forward<Self>(self).h_, asio_impl::cancellation_type::all);
-//  }
-//};
-
-//struct initiating {};
-//struct initiated {};
-//
-//template<typename Token>
-//struct cancellation_signal {
-//  std::variant<
-//    initiating,
-//    initiated,
-//    on_stop_request,
-//    stop_callback_t<Token>> state_;
-//  std::mutex m_;
-//};
 
 template<typename Receiver, typename Initiation>
 struct completion_handler {
@@ -164,19 +64,10 @@ struct completion_handler {
     const std::lock_guard l(self_->state_->m_);
     self_->state_->complete_ = true;
     self_->callback_.reset();
-    //self_->get_cancellation_slot_().clear();
-    //self_->callback_.reset();
-    //self_->state_->release_();
     auto&& r = self_->r_;
     self_ = nullptr;
     ::stdexec::set_value(std::move(r), std::forward<Ts>(ts)...);
   }
-  //constexpr auto get_cancellation_slot() const noexcept {
-  //  return cancellation_slot<
-  //    ::stdexec::stop_token_of_t<
-  //      ::stdexec::env_of_t<
-  //        Receiver>>>{&self_->callback_};
-  //}
   operation<Receiver, Initiation>* self_;
 };
 
@@ -229,133 +120,15 @@ struct executor {
   }
 };
 
-//struct on_stop_request {
-//  void operator()() && noexcept {
-//    signal_.emit(asio_impl::cancellation_type::all);
-//  }
-//  asio_impl::cancellation_signal& signal_;
-//};
-
-struct completed {};
-
-template<typename Token>
 struct state {
-  //  One for the completion handler, one for start
   std::recursive_mutex m_;
+  //  One for the completion handler, one for start
   std::size_t outstanding_{2};
   bool complete_{false};
   bool should_complete_() noexcept {
     return !complete_ && !--outstanding_;
   }
-  //std::atomic<std::size_t> outstanding_{2};
-  //std::atomic<bool> set_ex_{false};
-  //std::exception_ptr ex_;
-  //asio_impl::cancellation_signal signal_;
-  //std::optional<
-  //  ::stdexec::stop_callback_for_t<
-  //    Token,
-  //    on_stop_request>> callback_;
-  //std::variant<
-  //  initiating,
-  //  initiated,
-  //  on_stop_request,
-  //  stop_callback_t<Token>> cancellation_;
-  //std::mutex m_;
-  //std::mutex m_;
-  //asio_impl::cancellation_signal signal_;
-  //using callback_type_ = 
-  //  //  std::
-  //  ::stdexec::stop_callback_for_t<
-  //    Token,
-  //    on_stop_request>;
-  //std::variant<
-  //  std::monostate,
-  //  callback_type_,
-  //  completed> callback_;
-  //void set_exception_() noexcept {
-  //  if (!set_ex_.exchange(true, std::memory_order_relaxed)) {
-  //    ex_ = std::current_exception();
-  //  }
-  //}
-  //bool should_complete_() noexcept {
-  //  return outstanding_.fetch_sub(1, std::memory_order_acq_rel) == 1;
-  //}
-  //void release_() noexcept {
-  //  const std::lock_guard l(m_);
-  //  callback_ = completed{};
-  //}
-  //template<typename F>
-  //void acquire_(F f) noexcept {
-  //  const std::lock_guard l(m_);
-  //  if (std::holds_alternative<completed>(callback_)) {
-  //    return;
-  //  }
-  //  callback_.template emplace<callback_type_>(
-  //    std::invoke(std::move(f)),
-  //    on_stop_request{signal_});
-  //}
 };
-
-//template<typename Token>
-//struct cancellation_slot {
-//  Token token_;
-//  //std::optional<stop_callback_t<Token>>* callback_;
-//  std::shared_ptr<state<Token>> state_;
-//  bool operator==(const cancellation_slot&) const = default;
-//  bool operator!=(const cancellation_slot&) const = default;
-//  constexpr bool is_initiated_(const std::lock_guard<std::mutex>&) const noexcept {
-//    return
-//      std::holds_alternative<initiated>(state_->cancellation_) ||
-//      std::holds_alternative<stop_callback_t<Token>>(state_->cancellation_);
-//  }
-//  static constexpr bool is_connected() noexcept {
-//    return true;
-//  }
-//  constexpr bool has_handler() const noexcept {
-//    //  TOOD
-//    //return bool(*callback_);
-//    return false;
-//  }
-//  template<typename H>
-//  constexpr decltype(auto) assign(H&& h) {
-//    return emplace<std::remove_cvref_t<H>>(std::forward<H>(h));
-//  }
-//  template<typename H, typename... Args>
-//  constexpr H& emplace(Args&&... args) {
-//    using handler = std::remove_cvref_t<H>;
-//    using wrapper = cancellation_wrapper<handler>;
-//    handler* retr;
-//    on_stop_request f(
-//      std::in_place_type<wrapper>,
-//      retr,
-//      std::forward<Args>(args)...);
-//    {
-//      const std::lock_guard l(state_->m_);
-//      if (is_initiated_(l)) {
-//        state_->cancellation_.template emplace<stop_callback_t<Token>>(
-//          token_,
-//          std::move(f));
-//        assert(is_initiated_(l));
-//      } else {
-//        state_->cancellation_ = std::move(f);
-//        assert(!is_initiated_(l));
-//      }
-//    }
-//    //callback_->emplace(
-//    //  token_,
-//    //  std::move(f));
-//    return *retr;
-//  }
-//  constexpr void clear() noexcept {
-//    const std::lock_guard l(state_->m_);
-//    if (is_initiated_(l)) {
-//      state_->cancellation_ = initiated{};
-//    } else {
-//      state_->cancellation_ = initiating{};
-//    }
-//    //callback_->reset();
-//  }
-//};
 
 template<typename Receiver, typename Initiation>
 struct operation {
@@ -368,42 +141,18 @@ struct operation {
     }
     operation& self_;
   };
-                           // std::
-  using stop_token_type_ = ::stdexec::stop_token_of_t<
-    ::stdexec::env_of_t<Receiver>>;
-  using state_type_ = state<stop_token_type_>;
   Receiver r_;
   Initiation init_;
   std::exception_ptr ex_;
-  std::shared_ptr<state_type_> state_{std::make_shared<state_type_>()};
-  //std::shared_ptr<state> state_{std::make_shared<state>()};
+  std::shared_ptr<state> state_{std::make_shared<state>()};
   asio_impl::cancellation_signal signal_;
   std::optional<
     ::stdexec::stop_callback_for_t<
       ::stdexec::stop_token_of_t<
         ::stdexec::env_of_t<Receiver>>,
       on_stop_request_>> callback_;
-    //stop_callback_t<
-    //  ::stdexec::stop_token_of_t<
-    //    ::stdexec::env_of_t<
-    //      Receiver>>>> callback_;
-  //std::optional<
-  //  //  std::
-  //  ::stdexec::stop_callback_for_t<
-  //    //  std::
-  //    ::stdexec::stop_token_of_t<
-  //      ::stdexec::env_of_t<
-  //        Receiver>>,
-  //    on_stop_request>> callback_;
   using operation_state_concept = ::stdexec::operation_state_t;
-  //constexpr auto get_cancellation_slot_() noexcept {
-  //  return cancellation_slot<stop_token_type_>{
-  //    ::stdexec::get_stop_token(
-  //      ::stdexec::get_env(r_)),
-  //    state_};
-  //}
   void start() & noexcept {
-    //  TODO: Add this line and consequences thereof to slides
     const auto ptr = state_;
     const std::lock_guard l(ptr->m_);
     try {
@@ -424,41 +173,8 @@ struct operation {
       ::stdexec::get_stop_token(
         ::stdexec::get_env(r_)),
       on_stop_request_{*this});
-      //on_stop_request(signal_));
-    //if (ptr->should_complete_()) {
-    //  complete_();
-    //  return;
-    //}
-    //ptr->callback_.emplace(
-    //  ::stdexec::get_stop_token(
-    //    ::stdexec::get_env(r_)),
-    //  on_stop_request{ptr->signal_});
-    //const std::lock_guard l(ptr->m_);
-    //if (const auto f = std::get_if<on_stop_request>(&ptr->cancellation_); f) {
-    //  auto local = std::move(*f);
-    //  ptr->cancellation_.template emplace<stop_callback_t<stop_token_type_>>(
-    //    ::stdexec::get_stop_token(
-    //      ::stdexec::get_env(r_)),
-    //    std::move(local));
-    //} else {
-    //  ptr->cancellation_ = initiated{};
-    //}
-    //  TODO: Setup cancellation
-    //callback_.emplace(
-    //  //  std::
-    //  ::stdexec::get_stop_token(
-    //    ::stdexec::get_env(r_)),
-    //  on_stop_request{signal_});
-    //ptr->acquire_([&]() noexcept {
-    //  return ::stdexec::get_stop_token(
-    //    ::stdexec::get_env(r_));
-    //});
   }
   void complete_() noexcept {
-    //state_->callback_.reset();
-    //get_cancellation_slot_().clear();
-    //state_->release_();
-    //callback_.reset();
     if (ex_) {
       ::stdexec::set_error(std::move(r_), std::move(ex_));
       return;
@@ -524,22 +240,9 @@ struct associated_executor<completion_handler<Receiver, Initiation>, Executor> {
 
 template<typename Receiver, typename Initiation, typename CancellationSlot>
 struct associated_cancellation_slot<completion_handler<Receiver, Initiation>, CancellationSlot> {
-  //using type = asio_impl::cancellation_slot;
-  //using type = ::cancellation_slot<
-  //  ::stdexec::stop_token_of_t<
-  //    ::stdexec::env_of_t<
-  //      Receiver>>>;
   using type = asio_impl::cancellation_slot;
   static constexpr type get(const completion_handler<Receiver, Initiation>& h, CancellationSlot slot = CancellationSlot()) noexcept {
     return h.self_->signal_.slot();
-    //return h.self_->get_cancellation_slot_();
-    //return {
-    //  ::stdexec::get_stop_token(
-    //    ::stdexec::get_env(h.self_->r_)),
-    //  h.self_->state_};
-      //&h.self_->callback_};
-    //return h.self_->state_->signal_.slot();
-    //return h.self_->signal_.slot();
   }
 };
 
