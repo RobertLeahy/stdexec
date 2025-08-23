@@ -5,6 +5,9 @@
 #include <stdexec/execution.hpp>
 #include "../test_common/receivers.hpp"
 
+#include <boost/intrusive/slist.hpp>
+#include <boost/intrusive/slist_hook.hpp>
+
 #include <atomic>
 #include <barrier>
 #include <cassert>
@@ -44,6 +47,46 @@ template<typename, typename>
 struct operation;
 
 template<typename Receiver, typename Initiation>
+struct frame : ::boost::intrusive::slist_base_hook<> {
+  operation<Receiver, Initiation>* self_;
+  explicit frame(operation<Receiver, Initiation>& self) noexcept
+    : self_(&self)
+  {
+    self_->m_.lock();
+    self_->frames_.push_front(*this);
+  }
+  frame(const frame&) = delete;
+  frame& operator=(const frame&) = delete;
+  ~frame() noexcept {
+    if (!self_) {
+      return;
+    }
+    assert(&self_->frames_.front() == this);
+    self_->frames_.pop_front();
+    const auto should_complete = self_->frames_.empty() && self_->abandoned_;
+    self_->m_.unlock();
+    if (!should_complete) {
+      return;
+    }
+    self_->callback_.reset();
+    if (self_->ex_) {
+      ::stdexec::set_error(std::move(self_->r_), std::move(self_->ex_));
+    } else {
+      ::stdexec::set_stopped(std::move(self_->r_));
+    }
+  }
+  void release() noexcept {
+    assert(&self_->frames_.front() == this);
+    self_->frames_.pop_front();
+    self_->m_.unlock();
+    self_ = nullptr;
+  }
+  constexpr explicit operator bool() const noexcept {
+    return bool(self_);
+  }
+};
+
+template<typename Receiver, typename Initiation>
 struct completion_handler {
   constexpr completion_handler(operation<Receiver, Initiation>* self) noexcept
     : self_(self) {}
@@ -56,16 +99,16 @@ struct completion_handler {
     if (!self_) {
       return;
     }
-    std::unique_lock l(self_->state_->m_);
-    if (self_->state_->should_complete_(l)) {
-      self_->complete_(l);
-    }
+    const frame<Receiver, Initiation> f(*self_);
+    self_->abandoned_ = true;
   }
   template<typename... Ts>
   constexpr void operator()(Ts&&... ts) noexcept {
     {
-      const std::lock_guard l(self_->state_->m_);
-      self_->state_->complete_ = true;
+      const std::lock_guard l(self_->m_);
+      while (!self_->frames_.empty()) {
+        self_->frames_.front().release();
+      }
     }
     self_->callback_.reset();
     auto&& r = self_->r_;
@@ -85,27 +128,18 @@ struct executor {
   bool operator!=(const executor& other) const = default;
   template<typename F>
   void execute(F f) const noexcept {
-    const auto ptr = self_.state_;
-    std::unique_lock l(ptr->m_);
-    ++ptr->outstanding_;
+    const frame<Receiver, Initiation> g(self_);
     try {
-      ex_.execute([&self = self_, f = std::move(f), ptr]() mutable noexcept {
-        std::unique_lock l(ptr->m_);
-        ++ptr->outstanding_;
+      ex_.execute([&self = self_, f = std::move(f)]() mutable noexcept {
+        const frame<Receiver, Initiation> g(self);
         try {
           std::move(f)();
         } catch (...) {
           self.ex_ = std::current_exception();
         }
-        if (ptr->should_complete_(l)) {
-          self.complete_(l);
-        }
       });
     } catch (...) {
       self_.ex_ = std::current_exception();
-    }
-    if (ptr->should_complete_(l)) {
-      self_.complete_(l);
     }
   }
   template<typename... Args>
@@ -124,23 +158,11 @@ struct executor {
   }
 };
 
-struct state {
-  std::recursive_mutex m_;
-  //  One for the completion handler, one for start
-  std::size_t outstanding_{2};
-  bool complete_{false};
-  bool should_complete_(const std::unique_lock<std::recursive_mutex>&) noexcept {
-    return !complete_ && !--outstanding_;
-  }
-};
-
 template<typename Receiver, typename Initiation>
 struct operation {
   struct on_stop_request_ {
     void operator()() && noexcept {
-      const auto ptr = self_.state_;
-      //  Asio requires that cancellation be emitted thread safely
-      const std::lock_guard l(ptr->m_);
+      const std::lock_guard l(self_.m_);
       self_.signal_.emit(asio_impl::cancellation_type::all);
     }
     operation& self_;
@@ -148,7 +170,12 @@ struct operation {
   Receiver r_;
   Initiation init_;
   std::exception_ptr ex_;
-  std::shared_ptr<state> state_{std::make_shared<state>()};
+  ::boost::intrusive::slist<
+    frame<Receiver, Initiation>,
+    ::boost::intrusive::constant_time_size<false>,
+    ::boost::intrusive::linear<true>> frames_;
+  bool abandoned_{false};
+  std::recursive_mutex m_;
   asio_impl::cancellation_signal signal_;
   std::optional<
     ::stdexec::stop_callback_for_t<
@@ -157,8 +184,7 @@ struct operation {
       on_stop_request_>> callback_;
   using operation_state_concept = ::stdexec::operation_state_t;
   void start() & noexcept {
-    const auto ptr = state_;
-    std::unique_lock l(ptr->m_);
+    const frame<Receiver, Initiation> f(*this);
     try {
       std::invoke(
         std::move(init_),
@@ -166,27 +192,12 @@ struct operation {
     } catch (...) {
       ex_ = std::current_exception();
     }
-    if (ptr->complete_) {
-      return;
+    if (f) {
+      callback_.emplace(
+        ::stdexec::get_stop_token(
+          ::stdexec::get_env(r_)),
+        on_stop_request_{*this});
     }
-    if (!--ptr->outstanding_) {
-      complete_(l);
-      return;
-    }
-    callback_.emplace(
-      ::stdexec::get_stop_token(
-        ::stdexec::get_env(r_)),
-      on_stop_request_{*this});
-  }
-  void complete_(std::unique_lock<std::recursive_mutex>& l) noexcept {
-    state_->complete_ = true;
-    l.unlock();
-    callback_.reset();
-    if (ex_) {
-      ::stdexec::set_error(std::move(r_), std::move(ex_));
-      return;
-    }
-    ::stdexec::set_stopped(std::move(r_));
   }
 };
 
@@ -263,7 +274,7 @@ namespace {
       [original_ex, &r, f = std::move(f)](auto h) mutable {
         const auto ex = asio_impl::require(
           asio_impl::get_associated_executor(h, original_ex),
-          asio::execution::blocking.never);
+          asio_impl::execution::blocking.never);
         ex.execute(
           [ex, &r, begin = std::ranges::begin(r), f = std::move(f), h = std::move(h)](this auto&& self) {
             if (begin == std::ranges::end(r)) {
