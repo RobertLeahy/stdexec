@@ -114,7 +114,7 @@ namespace asioexec {
 
     template <typename Signatures, typename Receiver, typename... Args>
     constexpr void set_value(Receiver&& r, Args&&... args) {
-      using tuple = decltype(std::declval<overload_set<Signatures>>()(std::declval<Args>()...));
+      using tuple = decltype(overload_set<Signatures>{}(std::declval<Args>()...));
       completion_token::set_value_impl<tuple>(
         static_cast<Receiver&&>(r),
         std::make_index_sequence<std::tuple_size_v<tuple>>{},
