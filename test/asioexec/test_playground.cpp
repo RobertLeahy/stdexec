@@ -260,6 +260,7 @@ template<typename Receiver, typename Initiation, typename CancellationSlot>
 struct associated_cancellation_slot<completion_handler<Receiver, Initiation>, CancellationSlot> {
   using type = asio_impl::cancellation_slot;
   static constexpr type get(const completion_handler<Receiver, Initiation>& h, CancellationSlot slot = CancellationSlot()) noexcept {
+    (void)slot;
     return h.self_->signal_.slot();
   }
 };
