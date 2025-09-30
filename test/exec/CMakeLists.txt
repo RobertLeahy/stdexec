@@ -47,6 +47,9 @@ set(exec_test_sources
     test_just_from.cpp
     test_fork.cpp
     test_object.cpp
+    test_construct.cpp
+    test_observe.cpp
+    test_storage_for_objects.cpp
     test_storage_for_completion_signatures.cpp
     sequence/test_any_sequence_of.cpp
     sequence/test_empty_sequence.cpp
@@ -71,6 +74,9 @@ set(exec_test_sources
     test_lifetime.cpp
     test_sync_object.cpp
     test_nest_scopes.cpp
+    test_enter.cpp
+    test_enter_sender.cpp
+    test_exit_sender.cpp
     )
 
 add_executable(test.exec ${exec_test_sources})
