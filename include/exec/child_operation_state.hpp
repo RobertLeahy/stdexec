@@ -62,7 +62,7 @@ private:
     ParentOp* parent_op_;
   };
   using child_ = ::stdexec::connect_result_t<ChildSender, receiver_>;
-protected:
+public:
   manual_child_operation_state() noexcept = default;
   ~manual_child_operation_state() = default;
   constexpr void start() noexcept {
@@ -97,7 +97,7 @@ class child_operation_state
   using base_ = manual_child_operation_state<ParentOp, Tag, Env, ChildSender>;
   using base_::construct;
   using base_::destruct;
-protected:
+public:
   constexpr explicit child_operation_state(ChildSender&& sender)
     noexcept(
       noexcept(
