@@ -62,6 +62,7 @@ set(exec_test_sources
     test_system_context.cpp
     $<$<BOOL:${STDEXEC_ENABLE_LIBDISPATCH}>:test_libdispatch.cpp>
     test_lifetime.cpp
+    test_unless_stop_requested.cpp
     )
 
 add_executable(test.exec ${exec_test_sources})
