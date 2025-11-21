@@ -172,7 +172,7 @@ template<typename Function, typename Sender>
 class sender {
   template<typename Self>
   using child_sender_ = decltype(
-    std::forward_like<Self>(std::declval<Sender&>()));
+    ::stdexec::__forward_like<Self>(std::declval<Sender&>()));
   template<typename Self, typename Receiver>
   using operation_state_ = operation_state<
     Function,
@@ -184,16 +184,16 @@ public:
     requires
       std::is_constructible_v<
         Function,
-        decltype(std::forward_like<Self>(std::declval<Function&>()))> &&
+        decltype(::stdexec::__forward_like<Self>(std::declval<Function&>()))> &&
       is_observer_v<
         Function,
         ::stdexec::completion_signatures_of_t<
-          decltype(std::forward_like<Self>(std::declval<Sender&>())),
+          decltype(::stdexec::__forward_like<Self>(std::declval<Sender&>())),
           Env>>
   consteval completion_signatures<
     Function,
     ::stdexec::completion_signatures_of_t<
-      decltype(std::forward_like<Self>(std::declval<Sender&>())),
+      decltype(::stdexec::__forward_like<Self>(std::declval<Sender&>())),
       Env>> get_completion_signatures(this Self&&, const Env&) noexcept
   {
     return {};
@@ -208,8 +208,8 @@ public:
     noexcept(
       std::is_nothrow_constructible_v<
         operation_state_<Self, Receiver>,
-        decltype(std::forward_like<Self>(std::declval<Function&>())),
-        decltype(std::forward_like<Self>(std::declval<Sender&>())),
+        decltype(::stdexec::__forward_like<Self>(std::declval<Function&>())),
+        decltype(::stdexec::__forward_like<Self>(std::declval<Sender&>())),
         Receiver>)
   {
     return operation_state_<Self, Receiver>(
@@ -228,13 +228,13 @@ struct adaptor : ::stdexec::sender_adaptor_closure<adaptor<Function>> {
     requires
       std::is_constructible_v<
         Function,
-        decltype(std::forward_like<Self>(std::declval<Function&>()))>
+        decltype(::stdexec::__forward_like<Self>(std::declval<Function&>()))>
   constexpr sender<Function, std::remove_cvref_t<Sender>> operator()(
     this Self&& self,
     Sender&& s) noexcept(
       std::is_nothrow_constructible_v<
         Function,
-        decltype(std::forward_like<Self>(std::declval<Function&>()))> &&
+        decltype(::stdexec::__forward_like<Self>(std::declval<Function&>()))> &&
       std::is_nothrow_constructible_v<
         std::remove_cvref_t<Sender>,
         Sender>)
