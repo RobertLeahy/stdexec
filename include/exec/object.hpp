@@ -69,32 +69,34 @@ concept object =
   std::is_destructible_v<Object> &&
   //  Non-void case
   (
-    !std::is_same_v<typename Object::type, void> &&
-    requires(Object o) {
-      { o.construct(std::declval<void*>()) } -> ::stdexec::sender;
-      { o.destroy(std::declval<typename Object::type*>()) } noexcept ->
-        ::stdexec::sender;
-    }) ||
+    (
+      !std::is_same_v<typename Object::type, void> &&
+      requires(Object o) {
+        { o.construct(std::declval<void*>()) } -> ::stdexec::sender;
+        { o.destroy(std::declval<typename Object::type*>()) } noexcept ->
+          ::stdexec::sender;
+      }) ||
   //  Void case
   requires(Object o) {
     { o.construct() } -> ::stdexec::sender;
     { o.destroy() } noexcept -> ::stdexec::sender;
-  };
+  });
 
 template<typename Object, typename Env>
 concept object_in =
   object<Object> &&
   //  Non-void case
-  requires(Object o) {
-    { o.construct(std::declval<void*>()) } -> constructor_in<Env>;
-    { o.destroy(std::declval<typename Object::type*>()) } noexcept ->
-      destructor_in<Env>;
-  } ||
-  //  Void case
-  requires(Object o) {
-    { o.construct() } -> constructor_in<Env>;
-    { o.destroy() } noexcept -> destructor_in<Env>;
-  };
+  (
+    requires(Object o) {
+      { o.construct(std::declval<void*>()) } -> constructor_in<Env>;
+      { o.destroy(std::declval<typename Object::type*>()) } noexcept ->
+        destructor_in<Env>;
+    } ||
+    //  Void case
+    requires(Object o) {
+      { o.construct() } -> constructor_in<Env>;
+      { o.destroy() } noexcept -> destructor_in<Env>;
+    });
 
 template<typename Object>
 concept void_object =
