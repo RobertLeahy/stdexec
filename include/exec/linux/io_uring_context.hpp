@@ -384,7 +384,7 @@ public:
 struct submittable {
   template<typename>
   friend struct with_submittable_queue;
-  virtual bool submit(::io_uring_sqe&) noexcept = 0;
+  virtual void submit(::io_uring_sqe&) noexcept = 0;
 private:
   std::atomic<submittable*> next_{nullptr};
 };
@@ -415,9 +415,7 @@ struct with_submittable_queue : Base {
       const auto sqe = Base::get_sqe();
       if (sqe) {
         current->next_.store(nullptr, std::memory_order_relaxed);
-        if (current->submit(*sqe)) {
-          Base::consume_sqe();
-        }
+        current->submit(*sqe);
         continue;
       }
       if (!ptr) {
@@ -486,9 +484,8 @@ class schedule_operation_state
     schedule_operation_state,
     Receiver>;
   Context& ctx_;
-  virtual bool submit(::io_uring_sqe&) noexcept override {
+  virtual void submit(::io_uring_sqe&) noexcept override {
     ::stdexec::set_value(std::move(base_::get_receiver()));
-    return false;
   }
 public:
   explicit constexpr schedule_operation_state(
@@ -685,9 +682,8 @@ concept io_prepare_invocable =
 
 template<typename Derived>
 struct io_submit_base : submittable {
-  virtual bool submit(::io_uring_sqe& sqe) noexcept override final {
+  virtual void submit(::io_uring_sqe& sqe) noexcept override final {
     static_cast<Derived&>(*this).submit_io(sqe);
-    return true;
   }
 };
 
@@ -700,9 +696,8 @@ struct io_complete_base : completable {
 
 template<typename Derived, bool>
 struct io_submit_stop_base : submittable {
-  virtual bool submit(::io_uring_sqe& sqe) noexcept override final {
+  virtual void submit(::io_uring_sqe& sqe) noexcept override final {
     static_cast<Derived&>(*this).submit_stop(sqe);
-    return true;
   }
 };
 template<typename Derived>
@@ -792,6 +787,7 @@ class io_operation_state
   }
   constexpr void submit_io(::io_uring_sqe& sqe) noexcept {
     start_(sqe);
+    ctx_.consume_sqe();
   }
   constexpr void submit_stop(::io_uring_sqe& sqe) noexcept
     requires (!unstoppable_)
@@ -808,6 +804,7 @@ class io_operation_state
       completable* self = base;
       sqe.addr = reinterpret_cast<decltype(sqe.addr)>(self);
     }
+    ctx_.consume_sqe();
   }
   constexpr void complete_io(const ::io_uring_cqe& cqe) noexcept {
     if constexpr (!unstoppable_) {
