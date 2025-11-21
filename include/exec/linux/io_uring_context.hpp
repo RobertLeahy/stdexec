@@ -127,6 +127,9 @@ class queue {
         get_(ptr, offset)));
   }
 public:
+  constexpr unsigned to_index(const unsigned offset) const noexcept {
+    return offset & ring_mask;
+  }
   explicit constexpr queue(
     void* storage,
     const std::uint32_t head_offset,
@@ -142,6 +145,44 @@ public:
   std::atomic<unsigned>& tail;
   unsigned ring_mask;
   T* array;
+  constexpr bool empty() const noexcept {
+    return
+      head.load(std::memory_order_relaxed) ==
+      tail.load(std::memory_order_relaxed);
+  }
+  constexpr T* get_from_tail() noexcept {
+    //  We're the only ones who update this, relaxed is fine
+    const auto tail = this->tail.load(std::memory_order_relaxed);
+    //  Kernel updates this, so we need acquire to synchronize
+    const auto head = this->head.load(std::memory_order_acquire);
+    const auto u = to_index(tail);
+    if (head != tail) {
+      if (to_index(head) == u) {
+        //  Ring is full, can't submit
+        return nullptr;
+      }
+    }
+    //  Good to use array element, we'll publish the fact that we've used it in
+    //  the complete side of the operation
+    return array + u;
+  }
+  constexpr void advance_tail() noexcept {
+    //  We don't need a read memory ordering because only we update this, we
+    //  need release because we're publishing this to the kernel
+    tail.fetch_add(1, std::memory_order_release);
+  }
+  constexpr T* get_from_head() noexcept {
+    const auto head = this->head.load(std::memory_order_relaxed);
+    const auto tail = this->tail.load(std::memory_order_acquire);
+    if (head == tail) {
+      //  Empty
+      return nullptr;
+    }
+    return array + to_index(head);
+  }
+  constexpr void advance_head() noexcept {
+    head.fetch_add(1, std::memory_order_release);
+  }
 };
 
 template<typename F, typename... Args>
@@ -178,10 +219,6 @@ protected:
       submission_queue_entries_map_.data());
     //  TODO: Account for big SQEs?
     return ptr[u];
-  }
-  constexpr const ::io_uring_cqe& get_cqe_(const unsigned u) const noexcept {
-    //  TODO: Account for big CQEs?
-    return completion_queue_.array[u];
   }
 public:
   explicit base(const std::uint32_t entries, const ::io_uring_params& params)
@@ -270,55 +307,52 @@ public:
     return bool(flags & IORING_SQ_NEED_WAKEUP);
   }
   bool submission_queue_empty() const noexcept {
-    return
-      submission_queue_.tail.load(std::memory_order_relaxed) ==
-      submission_queue_.head.load(std::memory_order_relaxed);
+    return submission_queue_.empty();
+  }
+  bool can_get_sqe() noexcept {
+    //  TODO: Memory order
+    return bool(submission_queue_.get_from_tail());
+  }
+  ::io_uring_sqe* get_sqe() noexcept {
+    const auto ptr = submission_queue_.get_from_tail();
+    if (!ptr) {
+      return nullptr;
+    }
+    const std::size_t offset = ptr - submission_queue_.array;
+    *ptr = offset;
+    return &get_sqe_(offset);
+  }
+  void consume_sqe() noexcept {
+    submission_queue_.advance_tail();
   }
   template<std::invocable<::io_uring_sqe&> Invocable>
   bool try_submit(Invocable i) noexcept(
     std::is_nothrow_invocable_v<Invocable, ::io_uring_sqe&>)
   {
-    //  We use tail to communicate with the kernel so there's no need for any
-    //  memory ordering here since it'd be us synchronizing with ourself
-    const auto tail = submission_queue_.tail.load(std::memory_order_relaxed);
-    //  Head is what the kernel uses to communicate with us so we need to
-    //  acquire
-    const auto head = submission_queue_.head.load(std::memory_order_acquire);
-    const auto u = tail & submission_queue_.ring_mask;
-    if (head != tail) {
-      if ((head & submission_queue_.ring_mask) == u) {
-        //  Ring full, can't submit
-        return false;
-      }
+    const auto ptr = get_sqe();
+    if (!ptr) {
+      return false;
     }
-    //  We're good to use the SQE
-    if (!io_uring_context::bool_invoke(std::move(i), get_sqe_(u))) {
+    if (!io_uring_context::bool_invoke(std::move(i), *ptr)) {
       //  True here because we did our job and invoked the invocable, i.e. there
       //  were SQEs the invocable just declined to consume any of them
       return true;
     }
-    submission_queue_.array[u] = u;
-    //  We use release memory ordering to communicate with the kernel
-    submission_queue_.tail.store(tail + 1, std::memory_order_release);
+    consume_sqe();
     return true;
   }
   template<std::invocable<const ::io_uring_cqe&> Invocable>
   bool try_complete(Invocable i) noexcept(
     std::is_nothrow_invocable_v<Invocable, const ::io_uring_cqe&>)
   {
-    const auto head = completion_queue_.head.load(std::memory_order_relaxed);
-    const auto tail = completion_queue_.tail.load(std::memory_order_acquire);
-    if (head == tail) {
-      //  Ring empty, nothing to read
+    const auto ptr = completion_queue_.get_from_head();
+    if (!ptr) {
       return false;
     }
-    if (!io_uring_context::bool_invoke(
-      std::move(i),
-      get_cqe_(head & completion_queue_.ring_mask)))
-    {
+    if (!io_uring_context::bool_invoke(std::move(i), *ptr)) {
       return true;
     }
-    completion_queue_.head.store(head + 1, std::memory_order_release);
+    completion_queue_.advance_head();
     return true;
   }
   int enter(
@@ -368,10 +402,9 @@ struct with_submittable_queue : Base {
     if (!head_.load(std::memory_order_relaxed)) {
       return;
     }
-    if (!Base::try_submit([](const ::io_uring_sqe&) noexcept {
-      //  Don't consume the SQE, we're just checking to see if any are available
-      return false;
-    })) {
+    //  Check to see if there are SQEs available
+    if (!Base::can_get_sqe()) {
+      //  If not we can't do anything
       return;
     }
     //  Now that we know we'll do some work we actually service the queue
@@ -379,10 +412,12 @@ struct with_submittable_queue : Base {
     while (ptr) {
       const auto current = ptr;
       ptr = ptr->next_.load(std::memory_order_relaxed);
-      if (Base::try_submit([&](::io_uring_sqe& sqe) noexcept {
+      const auto sqe = Base::get_sqe();
+      if (sqe) {
         current->next_.store(nullptr, std::memory_order_relaxed);
-        return current->submit(sqe);
-      })) {
+        if (current->submit(*sqe)) {
+          Base::consume_sqe();
+        }
         continue;
       }
       if (!ptr) {
