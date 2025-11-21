@@ -150,11 +150,13 @@ public:
       head.load(std::memory_order_relaxed) ==
       tail.load(std::memory_order_relaxed);
   }
-  constexpr T* get_from_tail() noexcept {
+  constexpr T* get_from_tail(
+    std::memory_order order = std::memory_order_acquire) noexcept
+  {
     //  We're the only ones who update this, relaxed is fine
     const auto tail = this->tail.load(std::memory_order_relaxed);
     //  Kernel updates this, so we need acquire to synchronize
-    const auto head = this->head.load(std::memory_order_acquire);
+    const auto head = this->head.load(order);
     const auto u = to_index(tail);
     if (head != tail) {
       if (to_index(head) == u) {
@@ -310,8 +312,7 @@ public:
     return submission_queue_.empty();
   }
   bool can_get_sqe() noexcept {
-    //  TODO: Memory order
-    return bool(submission_queue_.get_from_tail());
+    return bool(submission_queue_.get_from_tail(std::memory_order_relaxed));
   }
   ::io_uring_sqe* get_sqe() noexcept {
     const auto ptr = submission_queue_.get_from_tail();
@@ -394,6 +395,57 @@ struct with_submittable_queue : Base {
   using Base::Base;
   void enqueue(submittable& to_submit) noexcept {
     enqueue_(to_submit, to_submit);
+  }
+private:
+  template<typename Receiver>
+  struct wait_for_sqe_operation_state_type_
+    : exec::inlinable_operation_state<
+        wait_for_sqe_operation_state_type_<Receiver>,
+        Receiver>,
+      private submittable
+  {
+  private:
+    using base_ = exec::inlinable_operation_state<
+      wait_for_sqe_operation_state_type_,
+      Receiver>;
+    with_submittable_queue& self_;
+    virtual void submit(::io_uring_sqe& sqe) noexcept {
+      ::stdexec::set_value(std::move(this->get_receiver()), sqe);
+    }
+  public:
+    constexpr wait_for_sqe_operation_state_type_(
+      with_submittable_queue& self,
+      Receiver r) noexcept
+      : base_(std::move(r)),
+        self_(self)
+    {}
+    void start() & noexcept {
+      self_.enqueue(*this);
+    }
+  };
+  struct wait_for_sqe_sender_type_ {
+  private:
+    using completion_signatures_ = ::stdexec::completion_signatures<
+      ::stdexec::set_value_t(::io_uring_sqe&)>;
+  public:
+    using sender_concept = ::stdexec::sender_t;
+    template<typename Env>
+    consteval completion_signatures_ get_completion_signatures(const Env&)
+      noexcept
+    {
+      return {};
+    }
+    template<::stdexec::receiver_of<completion_signatures_> Receiver>
+    constexpr wait_for_sqe_operation_state_type_<Receiver> connect(Receiver r)
+      const noexcept
+    {
+      return wait_for_sqe_operation_state_type_<Receiver>(self_, std::move(r));
+    }
+    with_submittable_queue& self_;
+  };
+public:
+  wait_for_sqe_sender_type_ wait_for_sqe() noexcept {
+    return {*this};
   }
   void dequeue() noexcept {
     //  These leading two if checks make sure that we don't grab the entire
