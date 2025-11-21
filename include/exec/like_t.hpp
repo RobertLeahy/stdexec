@@ -24,7 +24,7 @@ namespace exec {
 
 template<typename T, typename U>
 using like_t = decltype(
-  std::forward_like<T>(
+  ::stdexec::__forward_like<T>(
     std::declval<U&>()));
 
 }  // namespace exec
