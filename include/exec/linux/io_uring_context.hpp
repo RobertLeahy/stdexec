@@ -697,7 +697,7 @@ public:
     return {*this, sqe};
   }
 private:
-  template<typename> struct cancel_tag_;
+  template<typename> struct cancel_tag_ {};
   template<typename Receiver>
   class cancel_operation_state_
     : public exec::inlinable_operation_state<
@@ -708,7 +708,7 @@ private:
         cancel_tag_,
         ::stdexec::env_of_t<Receiver>,
         decltype(
-          std::declval<with_submittable_queue&>().get_or_wait_for_sqe()),
+          std::declval<with_submittable_queue&>().wait_for_sqe()),
         decltype(
           std::declval<with_submittable_queue&>().wait_for_completion(
             std::declval<::io_uring_sqe&>()))>
@@ -716,8 +716,8 @@ private:
     using receiver_base_ = exec::inlinable_operation_state<
       cancel_operation_state_,
       Receiver>;
-    using get_or_wait_sender_ = decltype(
-      std::declval<with_submittable_queue&>().get_or_wait_for_sqe());
+    using wait_for_sqe_sender_ = decltype(
+      std::declval<with_submittable_queue&>().wait_for_sqe());
     using wait_for_completion_sender_ = decltype(
       std::declval<with_submittable_queue&>().wait_for_completion(
         std::declval<::io_uring_sqe&>()));
@@ -725,7 +725,7 @@ private:
       cancel_operation_state_,
       cancel_tag_,
       ::stdexec::env_of_t<Receiver>,
-      get_or_wait_sender_,
+      wait_for_sqe_sender_,
       wait_for_completion_sender_>;
     with_submittable_queue& ctx_;
     const completable* op_;
@@ -738,25 +738,25 @@ private:
         ctx_(ctx),
         op_(&op)
     {
-      this->construct(ctx_.get_or_wait_for_cqe());
+      this->construct(ctx_.wait_for_sqe());
     }
     constexpr ~cancel_operation_state_() noexcept {
       if (op_) {
         //  Operation state was destroyed without starting, we need to destroy
         //  the child operation state
-        this->template destruct<get_or_wait_sender_>();
+        this->template destruct<wait_for_sqe_sender_>();
       }
     }
     void start() & noexcept {
-      ops_base_::template start<get_or_wait_sender_>();
+      ops_base_::template start<wait_for_sqe_sender_>();
     }
-    void set_value(cancel_tag_<get_or_wait_sender_>, ::io_uring_sqe& sqe)
+    void set_value(cancel_tag_<wait_for_sqe_sender_>, ::io_uring_sqe& sqe)
       noexcept
     {
       assert(op_);
       op_->prepare_cancel(sqe);
       op_ = nullptr;
-      this->template destruct<get_or_wait_sender_>();
+      this->template destruct<wait_for_sqe_sender_>();
       this->construct(ctx_.wait_for_completion(sqe));
       ops_base_::template start<wait_for_completion_sender_>();
     }
@@ -765,14 +765,39 @@ private:
       const ::io_uring_cqe& cqe) noexcept
     {
       (void)cqe;
+      this->template destruct<wait_for_completion_sender_>();
       ::stdexec::set_value(std::move(this->get_receiver()));
     }
     template<typename Tag>
-    constexpr auto get_env(Tag) const noexcept {
+    constexpr auto get_env(Tag) noexcept {
       return ::stdexec::get_env(this->get_receiver());
     }
   };
+  class cancel_sender_ {
+    using completion_signatures_ = ::stdexec::completion_signatures<
+      ::stdexec::set_value_t()>;
+  public:
+    using sender_concept = ::stdexec::sender_t;
+    template<typename Env>
+    consteval completion_signatures_ get_completion_signatures(const Env&) const
+      noexcept
+    {
+      return {};
+    }
+    template<::stdexec::receiver_of<completion_signatures_> Receiver>
+    constexpr auto connect(Receiver r) && noexcept {
+      return cancel_operation_state_<Receiver>(
+        ctx_,
+        op_,
+        std::move(r));
+    }
+    with_submittable_queue& ctx_;
+    const completable& op_;
+  };
 public:
+  constexpr cancel_sender_ cancel(const completable& op) noexcept {
+    return {*this, op};
+  }
 };
 
 //  TODO: Remove
