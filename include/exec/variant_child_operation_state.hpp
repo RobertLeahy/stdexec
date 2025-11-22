@@ -24,6 +24,7 @@
 #include <new>
 #include <type_traits>
 #include <utility>
+#include "like_t.hpp"
 #include "../stdexec/execution.hpp"
 
 namespace exec {
@@ -77,18 +78,23 @@ private:
     {alignof(child_<ChildSenders>)...});
   alignas(alignment_) std::byte buffer_[size_];
   template<typename ChildSender>
-  constexpr decltype(auto) get_() noexcept {
-    return *std::launder(
-      reinterpret_cast<child_<ChildSender>*>(buffer_));
-  }
-  template<typename ChildSender>
   constexpr static bool check_ =
     (std::is_same_v<ChildSender, ChildSenders> || ...);
 public:
+  template<typename ChildSender, typename Self>
+    requires check_<ChildSender>
+  constexpr decltype(auto) get(this Self&& self) noexcept {
+    using operation_state = child_<ChildSender>;
+    return ::stdexec::__forward_like<Self>(
+      *std::launder(
+        reinterpret_cast<
+          std::remove_reference_t<exec::like_t<Self, child_<ChildSender>>>*>(
+            self.buffer_)));
+  }
   template<typename ChildSender>
     requires check_<ChildSender>
   constexpr void start() noexcept {
-    ::stdexec::start(get_<ChildSender>());
+    ::stdexec::start(get<ChildSender>());
   }
   template<typename ChildSender>
     requires check_<ChildSender>
@@ -107,7 +113,7 @@ public:
   template<typename ChildSender>
     requires check_<ChildSender>
   constexpr void destruct() noexcept {
-    get_<ChildSender>().~child_<ChildSender>();
+    get<ChildSender>().~child_<ChildSender>();
   }
 };
 
