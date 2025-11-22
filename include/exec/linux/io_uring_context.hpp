@@ -392,28 +392,31 @@ private:
 
 template<typename Base>
 struct with_submittable_queue : Base {
+  //  From here until the next comment is the implementation of the mechanism
+  //  which allows consumers to wait for an SQE to become available if one isn't
+  //  eagerly available
   using Base::Base;
   void enqueue(submittable& to_submit) noexcept {
     enqueue_(to_submit, to_submit);
   }
 private:
   template<typename Receiver>
-  struct wait_for_sqe_operation_state_type_
+  struct wait_for_sqe_operation_state_
     : exec::inlinable_operation_state<
-        wait_for_sqe_operation_state_type_<Receiver>,
+        wait_for_sqe_operation_state_<Receiver>,
         Receiver>,
       private submittable
   {
   private:
     using base_ = exec::inlinable_operation_state<
-      wait_for_sqe_operation_state_type_,
+      wait_for_sqe_operation_state_,
       Receiver>;
     with_submittable_queue& self_;
     virtual void submit(::io_uring_sqe& sqe) noexcept {
       ::stdexec::set_value(std::move(this->get_receiver()), sqe);
     }
   public:
-    constexpr wait_for_sqe_operation_state_type_(
+    constexpr wait_for_sqe_operation_state_(
       with_submittable_queue& self,
       Receiver r) noexcept
       : base_(std::move(r)),
@@ -423,7 +426,7 @@ private:
       self_.enqueue(*this);
     }
   };
-  struct wait_for_sqe_sender_type_ {
+  struct wait_for_sqe_sender_ {
   private:
     using completion_signatures_ = ::stdexec::completion_signatures<
       ::stdexec::set_value_t(::io_uring_sqe&)>;
@@ -436,15 +439,15 @@ private:
       return {};
     }
     template<::stdexec::receiver_of<completion_signatures_> Receiver>
-    constexpr wait_for_sqe_operation_state_type_<Receiver> connect(Receiver r)
+    constexpr wait_for_sqe_operation_state_<Receiver> connect(Receiver r)
       const noexcept
     {
-      return wait_for_sqe_operation_state_type_<Receiver>(self_, std::move(r));
+      return wait_for_sqe_operation_state_<Receiver>(self_, std::move(r));
     }
     with_submittable_queue& self_;
   };
 public:
-  wait_for_sqe_sender_type_ wait_for_sqe() noexcept {
+  wait_for_sqe_sender_ wait_for_sqe() noexcept {
     return {*this};
   }
   void dequeue() noexcept {
@@ -519,121 +522,84 @@ private:
     }
   }
   std::atomic<submittable*> head_{nullptr};
-};
-
-template<
-  typename Context,
-  ::stdexec::receiver_of<
-    ::stdexec::completion_signatures<
-      ::stdexec::set_value_t()>> Receiver>
-class schedule_operation_state
-  : exec::inlinable_operation_state<
-      schedule_operation_state<Context, Receiver>,
-      Receiver>,
-    submittable
-{
-  using base_ = exec::inlinable_operation_state<
-    schedule_operation_state,
-    Receiver>;
-  Context& ctx_;
-  virtual void submit(::io_uring_sqe&) noexcept override {
-    ::stdexec::set_value(std::move(base_::get_receiver()));
-  }
-public:
-  explicit constexpr schedule_operation_state(
-    Context& ctx,
-    Receiver r) noexcept
-    : base_(std::move(r)),
-      ctx_(ctx)
-  {}
-  void start() & noexcept {
-    if constexpr (noexcept(ctx_.enqueue(*this))) {
-      ctx_.enqueue(*this);
-    } else {
-      try {
-        ctx_.enqueue(*this);
-      } catch (...) {
-        ::stdexec::set_error(
-          std::move(base_::get_receiver()),
-          std::current_exception());
-      }
+  //  Now comes the scheduler interface
+  template<typename Receiver>
+  class schedule_operation_state_
+    : exec::inlinable_operation_state<
+        schedule_operation_state_<Receiver>,
+        Receiver>,
+      submittable
+  {
+    using base_ = exec::inlinable_operation_state<
+      schedule_operation_state_,
+      Receiver>;
+    with_submittable_queue& ctx_;
+    virtual void submit(::io_uring_sqe&) noexcept override {
+      ::stdexec::set_value(std::move(base_::get_receiver()));
     }
-  }
-};
-
-template<typename>
-class scheduler;
-
-template<typename Context>
-class schedule_sender {
-  Context& ctx_;
-  static constexpr bool nothrow_enqueue_ = noexcept(
-    std::declval<Context&>().enqueue(std::declval<submittable&>()));
-  using completion_signatures_ = std::conditional_t<
-    nothrow_enqueue_,
-    ::stdexec::completion_signatures<
-      ::stdexec::set_value_t()>,
-    ::stdexec::completion_signatures<
-      ::stdexec::set_value_t(),
-      ::stdexec::set_error_t(std::exception_ptr)>>;
-  class env_ {
-    Context& ctx_;
   public:
-    explicit constexpr env_(Context& ctx) noexcept
-      : ctx_(ctx)
+    explicit constexpr schedule_operation_state_(
+      with_submittable_queue& ctx,
+      Receiver r) noexcept
+      : base_(std::move(r)),
+        ctx_(ctx)
     {}
-    constexpr scheduler<Context> query(
-      const ::stdexec::get_completion_scheduler_t<::stdexec::set_value_t>&)
-      const noexcept
-    {
-      return scheduler<Context>(ctx_);
+    void start() & noexcept {
+      ctx_.enqueue(*this);
     }
   };
+  struct scheduler_;
+  class schedule_sender_ {
+    using completion_signatures_ = ::stdexec::completion_signatures<
+      ::stdexec::set_value_t()>;
+    struct env_ {
+      constexpr scheduler_ query(
+        const ::stdexec::get_completion_scheduler_t<::stdexec::set_value_t>&)
+        const noexcept
+      {
+        return scheduler_{ctx_};
+      }
+      with_submittable_queue& ctx_;
+    };
+  public:
+    using sender_concept = ::stdexec::sender_t;
+    template<typename Env>
+    consteval completion_signatures_ get_completion_signatures(const Env&)
+      const noexcept
+    {
+      return {};
+    }
+    template<::stdexec::receiver_of<completion_signatures_> Receiver>
+    constexpr schedule_operation_state_<Receiver> connect(Receiver r) const
+      noexcept
+    {
+      return schedule_operation_state_<Receiver>(
+        ctx_,
+        std::move(r));
+    }
+    constexpr env_ get_env() const noexcept {
+      return env_{ctx_};
+    }
+    with_submittable_queue& ctx_;
+  };
+  struct scheduler_ {
+    constexpr bool operator==(const scheduler_& rhs) const noexcept {
+      return std::addressof(ctx_) == std::addressof(rhs.ctx_);
+    }
+    constexpr schedule_sender_ schedule() const noexcept {
+      return schedule_sender_{ctx_};
+    }
+    with_submittable_queue& ctx_;
+  };
 public:
-  using sender_concept = ::stdexec::sender_t;
-  explicit constexpr schedule_sender(Context& ctx) noexcept
-    : ctx_(ctx)
-  {}
-  template<typename Env>
-  consteval completion_signatures_ get_completion_signatures(const Env&)
-    const noexcept
-  {
-    return {};
+  constexpr scheduler_ get_scheduler() noexcept {
+    return scheduler_{*this};
   }
-  template<::stdexec::receiver_of<completion_signatures_> Receiver>
-  constexpr schedule_operation_state<Context, Receiver> connect(Receiver r)
-    const noexcept
-  {
-    return schedule_operation_state<Context, Receiver>(
-      ctx_,
-      std::move(r));
-  }
-  constexpr env_ get_env() const noexcept {
-    return env_(ctx_);
-  }
-};
-
-template<typename Context>
-class scheduler {
-  Context& ctx_;
-public:
-  constexpr bool operator==(const scheduler& rhs) const noexcept {
-    return std::addressof(ctx_) == std::addressof(rhs.ctx_);
-  }
-  constexpr schedule_sender<Context> schedule() const noexcept {
-    return schedule_sender<Context>(ctx_);
-  }
-  explicit constexpr scheduler(Context& ctx) noexcept
-    : ctx_(ctx)
-  {}
 };
 
 template<typename Base>
 struct with_scheduler : Base {
   using Base::Base;
-  scheduler<with_scheduler> get_scheduler() noexcept {
-    return scheduler<with_scheduler>(*this);
-  }
 };
 
 template<typename Env>
