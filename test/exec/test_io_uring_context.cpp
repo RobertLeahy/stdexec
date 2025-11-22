@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstring>
 #include <exception>
+#include <functional>
 #include <system_error>
 #include <thread>
 #include <type_traits>
@@ -271,13 +272,16 @@ TEST_CASE("When the kernel thread goes to sleep it can be awoken with "
 TEST_CASE("When SQEs aren't available operations can be enqueued in an atomic, "
   "intrusive linked list", "[io_uring][io_uring_context]")
 {
+  using context_type = detail::io_uring_context::with_submittable_queue<
+    detail::io_uring_context::base>;
   struct submittable : detail::io_uring_context::submittable {
-    virtual bool submit(::io_uring_sqe& sqe) noexcept override {
+    virtual void submit(::io_uring_sqe& sqe) noexcept override {
       submitted = true;
       std::memset(&sqe, 0, sizeof(sqe));
       sqe.opcode = IORING_OP_NOP;
-      return true;
+      ctx->consume_sqe();
     }
+    context_type* ctx{};
     bool submitted{false};
   };
   submittable a;
@@ -291,6 +295,8 @@ TEST_CASE("When SQEs aren't available operations can be enqueued in an atomic, "
         retr.sq_thread_idle = 5000;
         return retr;
       }());
+  a.ctx = &ctx;
+  b.ctx = &ctx;
   ctx.enqueue(a);
   ctx.enqueue(b);
   CHECK(!a.submitted);
@@ -314,18 +320,20 @@ TEST_CASE("More tasks can be awaiting a SQE than there are SQEs (i.e. it's not "
   "necessary that all pending tasks be submittable in a single shot",
   "[io_uring][io_uring_context]")
 {
+  using context_type = detail::io_uring_context::with_submittable_queue<
+    detail::io_uring_context::base>;
   struct submittable : detail::io_uring_context::submittable {
-    virtual bool submit(::io_uring_sqe& sqe) noexcept override {
+    virtual void submit(::io_uring_sqe& sqe) noexcept override {
       submitted = true;
       std::memset(&sqe, 0, sizeof(sqe));
       sqe.opcode = IORING_OP_NOP;
-      return true;
+      ctx->consume_sqe();
     }
+    context_type* ctx{};
     bool submitted{false};
   };
   std::vector<submittable> v(2048);
-  detail::io_uring_context::with_submittable_queue<
-    detail::io_uring_context::base> ctx(
+  context_type ctx(
       32,
       []() noexcept {
         ::io_uring_params retr{};
@@ -333,13 +341,32 @@ TEST_CASE("More tasks can be awaiting a SQE than there are SQEs (i.e. it's not "
         retr.sq_thread_idle = 5000;
         return retr;
       }());
+  for (auto&& submittable : v) {
+    submittable.ctx = &ctx;
+  }
   for (auto&& task : v) {
     ctx.enqueue(task);
   }
+  auto op = ::stdexec::connect(
+    ctx.wait_for_sqe() | ::stdexec::then([&](auto&& sqe) noexcept {
+      std::memset(&sqe, 0, sizeof(sqe));
+      sqe.opcode = IORING_OP_NOP;
+      ctx.consume_sqe();
+    }),
+    expect_void_receiver{});
+  auto op2 = ::stdexec::connect(
+    ctx.get_or_wait_for_sqe() | ::stdexec::then([&](auto&& sqe) noexcept {
+      std::memset(&sqe, 0, sizeof(sqe));
+      sqe.opcode = IORING_OP_NOP;
+      ctx.consume_sqe();
+    }),
+    expect_void_receiver{});
   const auto submitted = [](const submittable& s) noexcept {
     return s.submitted;
   };
   CHECK(std::none_of(v.begin(), v.end(), submitted));
+  ::stdexec::start(op);
+  ::stdexec::start(op2);
   ctx.dequeue();
   CHECK(std::any_of(v.begin(), v.end(), submitted));
   CHECK(!std::all_of(v.begin(), v.end(), submitted));
@@ -352,7 +379,7 @@ TEST_CASE("More tasks can be awaiting a SQE than there are SQEs (i.e. it's not "
         ++completed;
       });
       ctx.dequeue();
-      return completed == v.size();
+      return completed == (v.size() + 2);
     });
 }
 
@@ -396,6 +423,93 @@ TEST_CASE("Scheduling works via the intrusive linked list of items awaiting "
   ::stdexec::start(op);
   detail::io_uring_context::poll(ctx, done);
 }
+
+TEST_CASE("An asynchronous operation can be used to acquire an SQE, and then to wait for the completion of that work", "[io_uring][io_uring_context]")
+{
+  detail::io_uring_context::with_submittable_queue<
+    detail::io_uring_context::base> ctx(
+      32,
+      []() noexcept {
+        ::io_uring_params retr{};
+        retr.flags = IORING_SETUP_SQPOLL;
+        retr.sq_thread_idle = 5000;
+        return retr;
+      }());
+  std::atomic<bool> done{false};
+  auto sender =
+    ctx.get_or_wait_for_sqe() |
+    ::stdexec::then([](::io_uring_sqe& sqe) noexcept {
+      //  This is kludge to work around the fact that let_value decay copies
+      return std::ref(sqe);
+    }) | 
+    ::stdexec::let_value([&](::io_uring_sqe& sqe) noexcept {
+      std::memset(&sqe, 0, sizeof(sqe));
+      sqe.opcode = IORING_OP_NOP;
+      return ctx.wait_for_completion(sqe);
+    }) |
+    ::stdexec::then([&](const ::io_uring_cqe& cqe) {
+      CHECK(cqe.res == 0);
+      done.store(true, std::memory_order_relaxed);
+    });
+  auto op = ::stdexec::connect(
+    std::move(sender),
+    expect_void_receiver{});
+  ::stdexec::start(op);
+  detail::io_uring_context::poll(ctx, done);
+}
+
+TEST_CASE("Operations can be cancelled", "[io_uring][io_uring_context]") {
+  detail::io_uring_context::with_submittable_queue<
+    detail::io_uring_context::base> ctx(
+      32,
+      []() noexcept {
+        ::io_uring_params retr{};
+        retr.flags = IORING_SETUP_SQPOLL;
+        retr.sq_thread_idle = 5000;
+        return retr;
+      }());
+  auto [read, write] = []() {
+    int fds[2];
+    REQUIRE(::pipe(fds) != -1);
+    return std::pair(
+      exec::safe_file_descriptor(fds[0]),
+      exec::safe_file_descriptor(fds[1]));
+  }();
+  unsigned to_read = 0;
+  const auto sqe = ctx.get_sqe();
+  REQUIRE(sqe);
+  std::memset(sqe, 0, sizeof(*sqe));
+  sqe->opcode = IORING_OP_READ;
+  sqe->fd = read.native_handle();
+  sqe->off = -1;
+  sqe->addr = reinterpret_cast<decltype(sqe->addr)>(&to_read);
+  sqe->len = sizeof(to_read);
+  bool invoked = false;
+  auto op = ::stdexec::connect(
+    ctx.wait_for_completion(*sqe),
+    make_fun_receiver([&](const ::io_uring_cqe& cqe) {
+      invoked = true;
+      CHECK(cqe.res < 0);
+    }));
+  ::stdexec::start(op);
+  bool cancel_invoked = false;
+  auto cancel_op = ::stdexec::connect(
+    ctx.cancel(op),
+    make_fun_receiver([&]() noexcept {
+      cancel_invoked = true;
+    }));
+  ::stdexec::start(cancel_op);
+  poll_until(
+    ctx,
+    [&]() {
+      ctx.dequeue();
+      detail::io_uring_context::complete(ctx);
+      return invoked && cancel_invoked;
+    });
+  CHECK(invoked);
+  CHECK(cancel_invoked);
+}
+
 
 TEST_CASE("Simple, unstoppable I/O works", "[io_uring][io_uring_context]") {
   auto [read, write] = []() {
