@@ -401,8 +401,8 @@ struct with_submittable_queue : Base {
   }
 private:
   template<typename Receiver>
-  struct wait_for_sqe_operation_state_
-    : exec::inlinable_operation_state<
+  class wait_for_sqe_operation_state_
+    : protected exec::inlinable_operation_state<
         wait_for_sqe_operation_state_<Receiver>,
         Receiver>,
       private submittable
@@ -411,10 +411,11 @@ private:
     using base_ = exec::inlinable_operation_state<
       wait_for_sqe_operation_state_,
       Receiver>;
-    with_submittable_queue& self_;
     virtual void submit(::io_uring_sqe& sqe) noexcept {
       ::stdexec::set_value(std::move(this->get_receiver()), sqe);
     }
+  protected:
+    with_submittable_queue& self_;
   public:
     constexpr wait_for_sqe_operation_state_(
       with_submittable_queue& self,
@@ -426,8 +427,8 @@ private:
       self_.enqueue(*this);
     }
   };
-  struct wait_for_sqe_sender_ {
-  private:
+  template<template<typename> typename OperationState>
+  class sqe_sender_ {
     using completion_signatures_ = ::stdexec::completion_signatures<
       ::stdexec::set_value_t(::io_uring_sqe&)>;
   public:
@@ -439,15 +440,37 @@ private:
       return {};
     }
     template<::stdexec::receiver_of<completion_signatures_> Receiver>
-    constexpr wait_for_sqe_operation_state_<Receiver> connect(Receiver r)
-      const noexcept
-    {
-      return wait_for_sqe_operation_state_<Receiver>(self_, std::move(r));
+    constexpr OperationState<Receiver> connect(Receiver r) const noexcept {
+      return OperationState<Receiver>(self_, std::move(r));
     }
     with_submittable_queue& self_;
   };
 public:
-  wait_for_sqe_sender_ wait_for_sqe() noexcept {
+  //  This is thread safe but always enqueues
+  sqe_sender_<wait_for_sqe_operation_state_> wait_for_sqe() noexcept {
+    return {*this};
+  }
+private:
+  template<typename Receiver>
+  class get_or_wait_for_sqe_operation_state_
+    : wait_for_sqe_operation_state_<Receiver>
+  {
+    using base_ = wait_for_sqe_operation_state_<Receiver>;
+  public:
+    using base_::base_;
+    void start() & noexcept {
+      if (const auto sqe = this->self_.get_sqe(); sqe) {
+        ::stdexec::set_value(std::move(this->get_receiver()), *sqe);
+        return;
+      }
+      base_::start();
+    }
+  };
+public:
+  //  This is not thread safe but tries to get an SQE eagerly
+  sqe_sender_<get_or_wait_for_sqe_operation_state_> get_or_wait_for_sqe()
+    noexcept
+  {
     return {*this};
   }
   void dequeue() noexcept {
