@@ -81,7 +81,10 @@ public:
         receiver_(parent_op)));
   }
   constexpr void destruct() noexcept {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdelete-non-abstract-non-virtual-dtor"
     get().~child_();
+#pragma clang diagnostic pop
   }
   child_& get() noexcept {
     return *std::launder(reinterpret_cast<child_*>(&storage_));
