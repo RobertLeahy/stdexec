@@ -207,6 +207,20 @@ constexpr bool bool_invoke(F&& f, Args&&... args) noexcept(
   return true;
 }
 
+struct completable {
+  virtual void complete(const ::io_uring_cqe&) noexcept = 0;
+  //  This is not const because it provides a way to call complete (above) which
+  //  is not invocable on a const object
+  auto user_data() noexcept {
+    return reinterpret_cast<decltype(::io_uring_sqe::user_data)>(this);
+  }
+  void prepare_cancel(::io_uring_sqe& sqe) const noexcept {
+    sqe = ::io_uring_sqe{}; //  constexpr std::memset to zero
+    sqe.opcode = IORING_OP_ASYNC_CANCEL;
+    sqe.addr = reinterpret_cast<decltype(sqe.addr)>(this);
+  }
+};
+
 class base {
 protected:
   params params_;
@@ -381,6 +395,68 @@ public:
   }
   //  TODO: Bulk submit?
   //  TODO: Bulk complete?
+private:
+  template<typename Receiver>
+  class wait_for_completion_operation_state_
+    : public exec::inlinable_operation_state<
+        wait_for_completion_operation_state_<Receiver>,
+        Receiver>,
+      //  This is public to enable consumers to access the user_data pointer
+      public completable
+  {
+    using base_ = exec::inlinable_operation_state<
+      wait_for_completion_operation_state_,
+      Receiver>;
+    virtual void complete(const ::io_uring_cqe& cqe) noexcept {
+      ::stdexec::set_value(std::move(this->get_receiver()), cqe);        
+    }
+    base& ctx_;
+  public:
+    explicit wait_for_completion_operation_state_(
+      base& ctx,
+      ::io_uring_sqe& sqe,
+      Receiver r) noexcept
+      : base_(std::move(r)),
+        ctx_(ctx)
+    {
+      //  Now when the CQE is dequeued this operation state will receive the
+      //  complete invocation
+      sqe.user_data = this->user_data();
+    }
+    void start() & noexcept {
+      //  This actually gets the operation started
+      ctx_.consume_sqe();
+    }
+  };
+  class wait_for_completion_sender_ {
+    using completion_signatures_ = ::stdexec::completion_signatures<
+      ::stdexec::set_value_t(const ::io_uring_cqe&)>;
+  public:
+    using sender_concept = ::stdexec::sender_t;
+    base& ctx_;
+    ::io_uring_sqe& sqe_;
+    template<typename Env>
+    consteval completion_signatures_ get_completion_signatures(const Env&) const
+      noexcept
+    {
+      return {};
+    }
+    //  It's important that this is rvalue qualified because connecting mutates
+    //  the SQE and is therefore consumptive
+    template<::stdexec::receiver_of<completion_signatures_> Receiver>
+    auto connect(Receiver r) && noexcept {
+      return wait_for_completion_operation_state_<Receiver>(
+        ctx_,
+        sqe_,
+        std::move(r));
+    }
+  };
+public:
+  constexpr wait_for_completion_sender_ wait_for_completion(::io_uring_sqe& sqe)
+    noexcept
+  {
+    return {*this, sqe};
+  }
 };
 
 struct submittable {
@@ -391,19 +467,10 @@ private:
   std::atomic<submittable*> next_{nullptr};
 };
 
-struct completable {
-  virtual void complete(const ::io_uring_cqe&) noexcept = 0;
-  //  This is not const because it provides a way to call complete (above) which
-  //  is not invocable on a const object
-  auto user_data() noexcept {
-    return reinterpret_cast<decltype(::io_uring_sqe::user_data)>(this);
-  }
-  void prepare_cancel(::io_uring_sqe& sqe) const noexcept {
-    sqe = ::io_uring_sqe{}; //  constexpr std::memset to zero
-    sqe.opcode = IORING_OP_ASYNC_CANCEL;
-    sqe.addr = reinterpret_cast<decltype(sqe.addr)>(this);
-  }
-};
+template<typename Invocable>
+concept io_prepare_invocable =
+  std::is_nothrow_move_constructible_v<Invocable> &&
+  std::is_nothrow_invocable_v<Invocable, ::io_uring_sqe&>;
 
 template<typename Base>
 struct with_submittable_queue : Base {
@@ -415,6 +482,7 @@ struct with_submittable_queue : Base {
     enqueue_(to_submit, to_submit);
   }
 private:
+  struct tag_ {};
   template<typename Receiver>
   class wait_for_sqe_operation_state_
     : public exec::inlinable_operation_state<
@@ -429,17 +497,16 @@ private:
     virtual void submit(::io_uring_sqe& sqe) noexcept {
       ::stdexec::set_value(std::move(this->get_receiver()), sqe);
     }
-  protected:
-    with_submittable_queue& self_;
   public:
-    constexpr wait_for_sqe_operation_state_(
-      with_submittable_queue& self,
+    with_submittable_queue& ctx_;
+    constexpr explicit wait_for_sqe_operation_state_(
+      with_submittable_queue& ctx,
       Receiver r) noexcept
       : base_(std::move(r)),
-        self_(self)
+        ctx_(ctx)
     {}
     void start() & noexcept {
-      self_.enqueue(*this);
+      ctx_.enqueue(*this);
     }
   };
   template<template<typename> typename OperationState>
@@ -467,18 +534,44 @@ public:
   }
 private:
   template<typename Receiver>
-  class get_or_wait_for_sqe_operation_state_
-    : wait_for_sqe_operation_state_<Receiver>
+  class get_or_wait_for_sqe_operation_state_ :
+    public ::exec::inlinable_operation_state<
+      get_or_wait_for_sqe_operation_state_<Receiver>,
+      Receiver>,
+    public ::exec::child_operation_state<
+      get_or_wait_for_sqe_operation_state_<Receiver>,
+      tag_,
+      ::stdexec::env_of_t<Receiver>,
+      decltype(std::declval<with_submittable_queue&>().wait_for_sqe())>
   {
-    using base_ = wait_for_sqe_operation_state_<Receiver>;
+    using receiver_base_ = ::exec::inlinable_operation_state<
+      get_or_wait_for_sqe_operation_state_,
+      Receiver>;
+    using base_ = ::exec::child_operation_state<
+      get_or_wait_for_sqe_operation_state_,
+      tag_,
+      ::stdexec::env_of_t<Receiver>,
+      decltype(std::declval<with_submittable_queue&>().wait_for_sqe())>;
   public:
-    using base_::base_;
+    constexpr explicit get_or_wait_for_sqe_operation_state_(
+      with_submittable_queue& ctx,
+      Receiver r) noexcept
+      : receiver_base_(std::move(r)),
+        base_(ctx.wait_for_sqe())
+    {}
     void start() & noexcept {
-      if (const auto sqe = this->self_.get_sqe(); sqe) {
+      auto&& op = base_::get();
+      if (const auto sqe = op.ctx_.get_sqe(); sqe) {
         ::stdexec::set_value(std::move(this->get_receiver()), *sqe);
         return;
       }
       base_::start();
+    }
+    constexpr void set_value(tag_, ::io_uring_sqe& sqe) noexcept {
+      ::stdexec::set_value(std::move(this->get_receiver()), sqe);
+    }
+    constexpr auto get_env(tag_) noexcept {
+      return ::stdexec::get_env(this->get_receiver());
     }
   };
 public:
@@ -560,7 +653,6 @@ private:
     }
   }
   std::atomic<submittable*> head_{nullptr};
-  //  Now comes the scheduler interface
   template<typename Receiver>
   class schedule_operation_state_
     : public exec::inlinable_operation_state<
@@ -632,69 +724,6 @@ private:
 public:
   constexpr scheduler_ get_scheduler() noexcept {
     return {*this};
-  }
-  //  Utility to submit an operation and then do something when it completes
-private:
-  template<typename Receiver>
-  class wait_for_completion_operation_state_
-    : public exec::inlinable_operation_state<
-        wait_for_completion_operation_state_<Receiver>,
-        Receiver>,
-      //  This is public to enable consumers to access the user_data pointer
-      public completable
-  {
-    using base_ = exec::inlinable_operation_state<
-      wait_for_completion_operation_state_,
-      Receiver>;
-    virtual void complete(const ::io_uring_cqe& cqe) noexcept {
-      ::stdexec::set_value(std::move(this->get_receiver()), cqe);        
-    }
-    with_submittable_queue& ctx_;
-  public:
-    explicit wait_for_completion_operation_state_(
-      with_submittable_queue& ctx,
-      ::io_uring_sqe& sqe,
-      Receiver r) noexcept
-      : base_(std::move(r)),
-        ctx_(ctx)
-    {
-      //  Now when the CQE is dequeued this operation state will receive the
-      //  complete invocation
-      sqe.user_data = this->user_data();
-    }
-    void start() & noexcept {
-      //  This actually gets the operation started
-      ctx_.consume_sqe();
-    }
-  };
-  class wait_for_completion_sender_ {
-    using completion_signatures_ = ::stdexec::completion_signatures<
-      ::stdexec::set_value_t(const ::io_uring_cqe&)>;
-  public:
-    using sender_concept = ::stdexec::sender_t;
-    with_submittable_queue& ctx_;
-    ::io_uring_sqe& sqe_;
-    template<typename Env>
-    consteval completion_signatures_ get_completion_signatures(const Env&) const
-      noexcept
-    {
-      return {};
-    }
-    //  It's important that this is rvalue qualified because connecting mutates
-    //  the SQE and is therefore consumptive
-    template<::stdexec::receiver_of<completion_signatures_> Receiver>
-    auto connect(Receiver r) && noexcept {
-      return wait_for_completion_operation_state_<Receiver>(
-        ctx_,
-        sqe_,
-        std::move(r));
-    }
-  };
-public:
-  constexpr wait_for_completion_sender_ wait_for_completion(::io_uring_sqe& sqe)
-    noexcept
-  {
-    return {*this, sqe};
   }
 private:
   template<typename> struct cancel_tag_ {};
@@ -798,6 +827,120 @@ public:
   constexpr cancel_sender_ cancel(const completable& op) noexcept {
     return {*this, op};
   }
+private:
+  template<typename> struct io_tag_ {};
+  template<typename Prepare, typename Receiver>
+  class io_operation_state_
+    : public exec::inlinable_operation_state<
+        io_operation_state_<Prepare, Receiver>,
+        Receiver>,
+      public exec::variant_child_operation_state<
+        io_operation_state_<Prepare, Receiver>,
+        io_tag_,
+        ::stdexec::env_of_t<Receiver>,
+        decltype(
+          std::declval<with_submittable_queue&>().get_or_wait_for_sqe()),
+        decltype(
+          std::declval<with_submittable_queue&>().wait_for_completion(
+            std::declval<::io_uring_sqe&>()))>
+  {
+    using receiver_base_ = exec::inlinable_operation_state<
+      io_operation_state_,
+      Receiver>;
+    using get_or_wait_for_sqe_sender_ = decltype(
+      std::declval<with_submittable_queue&>().get_or_wait_for_sqe());
+    using wait_for_completion_sender_ = decltype(
+      std::declval<with_submittable_queue&>().wait_for_completion(
+        std::declval<::io_uring_sqe&>()));
+    using ops_base_ = exec::variant_child_operation_state<
+      io_operation_state_,
+      io_tag_,
+      ::stdexec::env_of_t<Receiver>,
+      get_or_wait_for_sqe_sender_,
+      wait_for_completion_sender_>;
+    with_submittable_queue* ctx_;
+    Prepare prepare_;
+  public:
+    explicit constexpr io_operation_state_(
+      with_submittable_queue& ctx,
+      Prepare prepare,
+      Receiver r) noexcept
+      : receiver_base_(std::move(r)),
+        ctx_(&ctx),
+        prepare_(std::move(prepare))
+    {
+      this->construct(ctx_->get_or_wait_for_sqe());
+    }
+    constexpr ~io_operation_state_() noexcept {
+      if (ctx_) {
+        //  Operation state was destroyed without starting, we need to destroy
+        //  the child operation state
+        this->template destruct<get_or_wait_for_sqe_sender_>();
+      }
+    }
+    void start() & noexcept {
+      //ops_base_::template start<get_or_wait_for_sqe_sender_>();
+    }
+    void set_value(io_tag_<get_or_wait_for_sqe_sender_>, ::io_uring_sqe& sqe)
+      noexcept
+    {
+      (void)sqe;
+      //assert(op_);
+      //op_->prepare_cancel(sqe);
+      //op_ = nullptr;
+      //this->template destruct<get_or_wait_for_sqe_sender_>();
+      //this->construct(ctx_.wait_for_completion(sqe));
+      //ops_base_::template start<wait_for_completion_sender_>();
+    }
+    void set_value(
+      io_tag_<wait_for_completion_sender_>,
+      const ::io_uring_cqe& cqe) noexcept
+    {
+      (void)cqe;
+      //this->template destruct<wait_for_completion_sender_>();
+      //::stdexec::set_value(std::move(this->get_receiver()));
+    }
+    template<typename Tag>
+    constexpr auto get_env(Tag) noexcept {
+      return ::stdexec::get_env(this->get_receiver());
+    }
+  };
+  template<typename Prepare>
+  class io_sender_ {
+    using completion_signatures_ = ::stdexec::completion_signatures<
+      ::stdexec::set_value_t(const ::io_uring_cqe&)>;
+  public:
+    using sender_concept = ::stdexec::sender_t;
+    template<typename Env>
+    consteval completion_signatures_ get_completion_signatures(const Env&) const
+      noexcept
+    {
+      return {};
+    }
+    template<
+      typename Self,
+      ::stdexec::receiver_of<completion_signatures_> Receiver>
+      requires std::is_constructible_v<
+        Prepare,
+        ::exec::like_t<Self, Prepare>>
+    constexpr auto connect(this Self&& self, Receiver r) noexcept(
+      std::is_nothrow_constructible_v<
+        Prepare,
+        ::exec::like_t<Self, Prepare>>)
+    {
+      return io_operation_state_<Prepare, Receiver>(
+        self.ctx_,
+        std::forward<Self>(self).prepare_,
+        std::move(r));
+    }
+    with_submittable_queue& ctx_;
+    Prepare prepare_;
+  };
+public:
+  template<typename Prepare>
+  constexpr io_sender_<Prepare> io(Prepare prepare) noexcept {
+    return {*this, std::move(prepare)};
+  }
 };
 
 //  TODO: Remove
@@ -891,12 +1034,6 @@ public:
 template<typename StopToken, typename Invocable>
   requires ::stdexec::unstoppable_token<StopToken>
 struct stop_callback<StopToken, Invocable> {};
-
-template<typename Invocable>
-concept io_prepare_invocable =
-  std::is_move_constructible_v<Invocable> &&
-  std::invocable<Invocable, ::io_uring_sqe&> &&
-  std::is_nothrow_invocable_v<Invocable, ::io_uring_sqe&>;
 
 template<typename Derived>
 struct io_submit_base : submittable {
