@@ -527,9 +527,10 @@ private:
     }
     with_submittable_queue& self_;
   };
+  using wait_for_sqe_sender_ = sqe_sender_<wait_for_sqe_operation_state_>;
 public:
   //  This is thread safe but always enqueues
-  sqe_sender_<wait_for_sqe_operation_state_> wait_for_sqe() noexcept {
+  wait_for_sqe_sender_ wait_for_sqe() noexcept {
     return {*this};
   }
 private:
@@ -574,11 +575,11 @@ private:
       return ::stdexec::get_env(this->get_receiver());
     }
   };
+  using get_or_wait_for_sqe_sender_ =
+    sqe_sender_<get_or_wait_for_sqe_operation_state_>;
 public:
   //  This is not thread safe but tries to get an SQE eagerly
-  sqe_sender_<get_or_wait_for_sqe_operation_state_> get_or_wait_for_sqe()
-    noexcept
-  {
+  get_or_wait_for_sqe_sender_ get_or_wait_for_sqe() noexcept {
     return {*this};
   }
   void dequeue() noexcept {
@@ -726,7 +727,10 @@ public:
     return {*this};
   }
 private:
-  template<typename> struct cancel_tag_ {};
+  template<typename> struct unary_tag_ {};
+  using wait_for_completion_sender_ = decltype(
+    std::declval<base&>().wait_for_completion(
+      std::declval<::io_uring_sqe&>()));
   template<typename Receiver>
   class cancel_operation_state_
     : public exec::inlinable_operation_state<
@@ -734,25 +738,17 @@ private:
         Receiver>,
       public exec::variant_child_operation_state<
         cancel_operation_state_<Receiver>,
-        cancel_tag_,
+        unary_tag_,
         ::stdexec::env_of_t<Receiver>,
-        decltype(
-          std::declval<with_submittable_queue&>().wait_for_sqe()),
-        decltype(
-          std::declval<with_submittable_queue&>().wait_for_completion(
-            std::declval<::io_uring_sqe&>()))>
+        wait_for_sqe_sender_,
+        wait_for_completion_sender_>
   {
     using receiver_base_ = exec::inlinable_operation_state<
       cancel_operation_state_,
       Receiver>;
-    using wait_for_sqe_sender_ = decltype(
-      std::declval<with_submittable_queue&>().wait_for_sqe());
-    using wait_for_completion_sender_ = decltype(
-      std::declval<with_submittable_queue&>().wait_for_completion(
-        std::declval<::io_uring_sqe&>()));
     using ops_base_ = exec::variant_child_operation_state<
       cancel_operation_state_,
-      cancel_tag_,
+      unary_tag_,
       ::stdexec::env_of_t<Receiver>,
       wait_for_sqe_sender_,
       wait_for_completion_sender_>;
@@ -779,7 +775,7 @@ private:
     void start() & noexcept {
       ops_base_::template start<wait_for_sqe_sender_>();
     }
-    void set_value(cancel_tag_<wait_for_sqe_sender_>, ::io_uring_sqe& sqe)
+    void set_value(unary_tag_<wait_for_sqe_sender_>, ::io_uring_sqe& sqe)
       noexcept
     {
       assert(op_);
@@ -790,7 +786,7 @@ private:
       ops_base_::template start<wait_for_completion_sender_>();
     }
     void set_value(
-      cancel_tag_<wait_for_completion_sender_>,
+      unary_tag_<wait_for_completion_sender_>,
       const ::io_uring_cqe& cqe) noexcept
     {
       (void)cqe;
@@ -828,7 +824,6 @@ public:
     return {*this, op};
   }
 private:
-  template<typename> struct io_tag_ {};
   template<typename Prepare, typename Receiver>
   class io_operation_state_
     : public exec::inlinable_operation_state<
@@ -836,25 +831,17 @@ private:
         Receiver>,
       public exec::variant_child_operation_state<
         io_operation_state_<Prepare, Receiver>,
-        io_tag_,
+        unary_tag_,
         ::stdexec::env_of_t<Receiver>,
-        decltype(
-          std::declval<with_submittable_queue&>().get_or_wait_for_sqe()),
-        decltype(
-          std::declval<with_submittable_queue&>().wait_for_completion(
-            std::declval<::io_uring_sqe&>()))>
+        get_or_wait_for_sqe_sender_,
+        wait_for_completion_sender_>
   {
     using receiver_base_ = exec::inlinable_operation_state<
       io_operation_state_,
       Receiver>;
-    using get_or_wait_for_sqe_sender_ = decltype(
-      std::declval<with_submittable_queue&>().get_or_wait_for_sqe());
-    using wait_for_completion_sender_ = decltype(
-      std::declval<with_submittable_queue&>().wait_for_completion(
-        std::declval<::io_uring_sqe&>()));
     using ops_base_ = exec::variant_child_operation_state<
       io_operation_state_,
-      io_tag_,
+      unary_tag_,
       ::stdexec::env_of_t<Receiver>,
       get_or_wait_for_sqe_sender_,
       wait_for_completion_sender_>;
@@ -879,26 +866,23 @@ private:
       }
     }
     void start() & noexcept {
-      //ops_base_::template start<get_or_wait_for_sqe_sender_>();
+      ops_base_::template start<get_or_wait_for_sqe_sender_>();
     }
-    void set_value(io_tag_<get_or_wait_for_sqe_sender_>, ::io_uring_sqe& sqe)
+    void set_value(unary_tag_<get_or_wait_for_sqe_sender_>, ::io_uring_sqe& sqe)
       noexcept
     {
-      (void)sqe;
-      //assert(op_);
-      //op_->prepare_cancel(sqe);
-      //op_ = nullptr;
-      //this->template destruct<get_or_wait_for_sqe_sender_>();
-      //this->construct(ctx_.wait_for_completion(sqe));
-      //ops_base_::template start<wait_for_completion_sender_>();
+      this->template destruct<get_or_wait_for_sqe_sender_>();
+      std::invoke(std::move(prepare_), sqe);
+      assert(ctx_);
+      this->construct(ctx_->wait_for_completion(sqe));
+      ops_base_::template start<wait_for_completion_sender_>();
     }
     void set_value(
-      io_tag_<wait_for_completion_sender_>,
+      unary_tag_<wait_for_completion_sender_>,
       const ::io_uring_cqe& cqe) noexcept
     {
-      (void)cqe;
-      //this->template destruct<wait_for_completion_sender_>();
-      //::stdexec::set_value(std::move(this->get_receiver()));
+      this->template destruct<wait_for_completion_sender_>();
+      ::stdexec::set_value(std::move(this->get_receiver()), cqe);
     }
     template<typename Tag>
     constexpr auto get_env(Tag) noexcept {
@@ -936,9 +920,191 @@ private:
     with_submittable_queue& ctx_;
     Prepare prepare_;
   };
+  template<typename Prepare, typename Receiver>
+  class stoppable_io_operation_state_
+    : public exec::inlinable_operation_state<
+        stoppable_io_operation_state_<Prepare, Receiver>,
+        Receiver>,
+      public exec::variant_child_operation_state<
+        stoppable_io_operation_state_<Prepare, Receiver>,
+        unary_tag_,
+        ::stdexec::env_of_t<Receiver>,
+        get_or_wait_for_sqe_sender_,
+        wait_for_completion_sender_>,
+      public exec::manual_child_operation_state<
+        stoppable_io_operation_state_<Prepare, Receiver>,
+        tag_,
+        ::stdexec::env_of_t<Receiver>,
+        cancel_sender_>
+  {
+    using receiver_base_ = exec::inlinable_operation_state<
+      stoppable_io_operation_state_,
+      Receiver>;
+    using ops_base_ = exec::variant_child_operation_state<
+      stoppable_io_operation_state_,
+      unary_tag_,
+      ::stdexec::env_of_t<Receiver>,
+      get_or_wait_for_sqe_sender_,
+      wait_for_completion_sender_>;
+    using cancel_base_ = exec::manual_child_operation_state<
+      stoppable_io_operation_state_,
+      tag_,
+      ::stdexec::env_of_t<Receiver>,
+      cancel_sender_>;
+    struct on_stop_request_ {
+      stoppable_io_operation_state_& self_;
+      void operator()() && noexcept {
+        self_.cancel_base_::construct(
+          self_.ctx_.cancel(
+            self_.ops_base_::template get<wait_for_completion_sender_>()));
+        self_.cancel_base_::start();
+      }
+    };
+    using stop_token_type_ = ::stdexec::stop_token_of_t<
+      ::stdexec::env_of_t<Receiver>>;
+    using stop_callback_type_ = ::stdexec::stop_callback_for_t<
+      stop_token_type_,
+      on_stop_request_>;
+    with_submittable_queue& ctx_;
+    std::variant<
+      std::monostate,
+      Prepare,
+      stop_callback_type_> storage_;
+    unsigned outstanding{1};
+  public:
+    explicit stoppable_io_operation_state_(
+      with_submittable_queue& ctx,
+      Prepare prepare,
+      Receiver r) noexcept
+      : receiver_base_(std::move(r)),
+        ctx_(ctx),
+        storage_(std::move(prepare))
+    {
+      ops_base_::construct(ctx_.get_or_wait_for_sqe());
+    }
+    constexpr ~stoppable_io_operation_state_() noexcept {
+      if (std::holds_alternative<Prepare>(storage_)) {
+        ops_base_::template destruct<get_or_wait_for_sqe_sender_>();
+      }
+    }
+    void start() & noexcept {
+      ops_base_::template start<get_or_wait_for_sqe_sender_>();
+    }
+    void set_value(unary_tag_<get_or_wait_for_sqe_sender_>, ::io_uring_sqe& sqe)
+      noexcept
+    {
+      ops_base_::template destruct<get_or_wait_for_sqe_sender_>();
+      const auto ptr = std::get_if<Prepare>(&storage_);
+      assert(ptr);
+      if (!ptr) {
+        STDEXEC_UNREACHABLE();
+      }
+      std::invoke(std::move(*ptr), sqe);
+      ops_base_::construct(ctx_.wait_for_completion(sqe));
+      ops_base_::template start<wait_for_completion_sender_>();
+      //  Normally there would be a concern that the operation state is
+      //  potentially outside its lifetime however we know this isn't true
+      //  because:
+      //
+      //  - We just got an SQE which always happens on the thread servicing the
+      //    ring, and
+      //  - Completion can't happen inline because we don't check the completion
+      //    queue
+      storage_.template emplace<stop_callback_type_>(
+        ::stdexec::get_stop_token(::stdexec::get_env(this->get_receiver())),
+        on_stop_request_{*this});
+    }
+    void set_value(
+      unary_tag_<wait_for_completion_sender_>,
+      const ::io_uring_cqe& cqe) noexcept
+    {
+      ops_base_::template destruct<wait_for_completion_sender_>();
+      //  Once this returns the stop callback is destroyed and can no longer be
+      //  invoked and therefore we don't have to worry about races therewith
+      storage_.template emplace<std::monostate>();
+      --outstanding;
+      if (outstanding) {
+        //  We'll let the stop operation take care of things since it's
+        //  outstanding
+        return;
+      }
+      if (
+        ::stdexec::get_stop_token(
+          ::stdexec::get_env(
+            this->get_receiver())).stop_requested())
+      {
+        ::stdexec::set_stopped(std::move(this->get_receiver()));
+        return;
+      }
+      ::stdexec::set_value(std::move(this->get_receiver()), cqe);
+    }
+    void set_value(tag_) noexcept {
+      cancel_base_::destruct();
+      --outstanding;
+      if (outstanding) {
+        //  We were first to finish, do nothing
+        return;
+      }
+      ::stdexec::set_stopped(std::move(this->get_receiver()));
+    }
+    template<typename Tag>
+    constexpr auto get_env(Tag) noexcept {
+      return ::stdexec::get_env(this->get_receiver());
+    }
+  };
+  template<typename Prepare>
+  class stoppable_io_sender_ {
+    using unstoppable_completion_signatures_ = ::stdexec::completion_signatures<
+      ::stdexec::set_value_t(const ::io_uring_cqe&)>;
+    using stoppable_completion_signatures_ = ::stdexec::completion_signatures<
+      ::stdexec::set_value_t(const ::io_uring_cqe&),
+      ::stdexec::set_stopped_t()>;
+    template<typename Env>
+    static constexpr bool unstoppable_ = ::stdexec::unstoppable_token<
+      ::stdexec::stop_token_of_t<Env>>;
+  public:
+    using sender_concept = ::stdexec::sender_t;
+    template<typename Env>
+    consteval auto get_completion_signatures(const Env&) const noexcept {
+      if constexpr (unstoppable_<Env>) {
+        return unstoppable_completion_signatures_{};
+      } else {
+        return stoppable_completion_signatures_{};
+      }
+    }
+    template<typename Self, typename Receiver>
+      requires
+        std::is_constructible_v<
+          Prepare,
+          ::exec::like_t<Self, Prepare>> &&
+        ::stdexec::receiver_of<
+          Receiver,
+          ::stdexec::completion_signatures_of_t<
+            Self,
+            ::stdexec::env_of_t<Receiver>>>
+    constexpr auto connect(this Self&& self, Receiver r) noexcept(
+      std::is_nothrow_constructible_v<
+        Prepare,
+        ::exec::like_t<Self, Prepare>>)
+    {
+      if constexpr (unstoppable_<::stdexec::env_of_t<Receiver>>) {
+        return io_operation_state_<Prepare, Receiver>(
+          self.ctx_,
+          std::forward<Self>(self).prepare_,
+          std::move(r));
+      } else {
+        return stoppable_io_operation_state_<Prepare, Receiver>(
+          self.ctx_,
+          std::forward<Self>(self).prepare_,
+          std::move(r));
+      }
+    }
+    with_submittable_queue& ctx_;
+    Prepare prepare_;
+  };
 public:
   template<typename Prepare>
-  constexpr io_sender_<Prepare> io(Prepare prepare) noexcept {
+  constexpr stoppable_io_sender_<Prepare> io(Prepare prepare) noexcept {
     return {*this, std::move(prepare)};
   }
 };
