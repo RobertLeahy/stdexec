@@ -460,7 +460,6 @@ public:
 };
 
 struct submittable {
-  template<typename>
   friend struct with_submittable_queue;
   virtual void submit(::io_uring_sqe&) noexcept = 0;
 private:
@@ -472,9 +471,8 @@ concept io_prepare_invocable =
   std::is_nothrow_move_constructible_v<Invocable> &&
   std::is_nothrow_invocable_v<Invocable, ::io_uring_sqe&>;
 
-template<typename Base>
-struct with_submittable_queue : Base {
-  using Base::Base;
+struct with_submittable_queue : base {
+  using base::base;
   //  From here until the next comment is the implementation of the mechanism
   //  which allows consumers to wait for an SQE to become available if one isn't
   //  eagerly available
@@ -543,7 +541,7 @@ private:
       get_or_wait_for_sqe_operation_state_<Receiver>,
       tag_,
       ::stdexec::env_of_t<Receiver>,
-      decltype(std::declval<with_submittable_queue&>().wait_for_sqe())>
+      wait_for_sqe_sender_>
   {
     using receiver_base_ = ::exec::inlinable_operation_state<
       get_or_wait_for_sqe_operation_state_,
@@ -552,7 +550,7 @@ private:
       get_or_wait_for_sqe_operation_state_,
       tag_,
       ::stdexec::env_of_t<Receiver>,
-      decltype(std::declval<with_submittable_queue&>().wait_for_sqe())>;
+      wait_for_sqe_sender_>;
   public:
     constexpr explicit get_or_wait_for_sqe_operation_state_(
       with_submittable_queue& ctx,
@@ -590,7 +588,7 @@ public:
       return;
     }
     //  Check to see if there are SQEs available
-    if (!Base::can_get_sqe()) {
+    if (!can_get_sqe()) {
       //  If not we can't do anything
       return;
     }
@@ -599,7 +597,7 @@ public:
     while (ptr) {
       const auto current = ptr;
       ptr = ptr->next_.load(std::memory_order_relaxed);
-      const auto sqe = Base::get_sqe();
+      const auto sqe = get_sqe();
       if (sqe) {
         current->next_.store(nullptr, std::memory_order_relaxed);
         current->submit(*sqe);
@@ -1109,7 +1107,7 @@ public:
   }
 };
 
-using context = with_submittable_queue<base>;
+using context = with_submittable_queue;
 
 template<typename Context>
 void complete(Context& ctx) noexcept {
