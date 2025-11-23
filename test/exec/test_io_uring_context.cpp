@@ -272,8 +272,6 @@ TEST_CASE("When the kernel thread goes to sleep it can be awoken with "
 TEST_CASE("When SQEs aren't available operations can be enqueued in an atomic, "
   "intrusive linked list", "[io_uring][io_uring_context]")
 {
-  using context_type = detail::io_uring_context::with_submittable_queue<
-    detail::io_uring_context::base>;
   struct submittable : detail::io_uring_context::submittable {
     virtual void submit(::io_uring_sqe& sqe) noexcept override {
       submitted = true;
@@ -281,20 +279,19 @@ TEST_CASE("When SQEs aren't available operations can be enqueued in an atomic, "
       sqe.opcode = IORING_OP_NOP;
       ctx->consume_sqe();
     }
-    context_type* ctx{};
+    io_uring_context* ctx{};
     bool submitted{false};
   };
   submittable a;
   submittable b;
-  detail::io_uring_context::with_submittable_queue<
-    detail::io_uring_context::base> ctx(
-      32,
-      []() noexcept {
-        ::io_uring_params retr{};
-        retr.flags = IORING_SETUP_SQPOLL;
-        retr.sq_thread_idle = 5000;
-        return retr;
-      }());
+  io_uring_context ctx(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
   a.ctx = &ctx;
   b.ctx = &ctx;
   ctx.enqueue(a);
@@ -320,8 +317,6 @@ TEST_CASE("More tasks can be awaiting a SQE than there are SQEs (i.e. it's not "
   "necessary that all pending tasks be submittable in a single shot",
   "[io_uring][io_uring_context]")
 {
-  using context_type = detail::io_uring_context::with_submittable_queue<
-    detail::io_uring_context::base>;
   struct submittable : detail::io_uring_context::submittable {
     virtual void submit(::io_uring_sqe& sqe) noexcept override {
       submitted = true;
@@ -329,11 +324,11 @@ TEST_CASE("More tasks can be awaiting a SQE than there are SQEs (i.e. it's not "
       sqe.opcode = IORING_OP_NOP;
       ctx->consume_sqe();
     }
-    context_type* ctx{};
+    io_uring_context* ctx{};
     bool submitted{false};
   };
   std::vector<submittable> v(2048);
-  context_type ctx(
+  io_uring_context ctx(
       32,
       []() noexcept {
         ::io_uring_params retr{};
@@ -386,9 +381,7 @@ TEST_CASE("More tasks can be awaiting a SQE than there are SQEs (i.e. it's not "
 TEST_CASE("Scheduling works via the intrusive linked list of items awaiting "
   "submission", "[io_uring][io_uring_context]")
 {
-  using context_type = detail::io_uring_context::with_submittable_queue<
-    detail::io_uring_context::base>;
-  context_type ctx(
+  io_uring_context ctx(
     32,
     []() noexcept {
       ::io_uring_params retr{};
@@ -399,7 +392,7 @@ TEST_CASE("Scheduling works via the intrusive linked list of items awaiting "
   const auto scheduler = ctx.get_scheduler();
   CHECK(scheduler == ctx.get_scheduler());
   {
-    context_type other(1, {});
+    io_uring_context other(1, {});
     CHECK(!(scheduler == other.get_scheduler()));
     CHECK(scheduler != other.get_scheduler());
   }
@@ -425,15 +418,14 @@ TEST_CASE("Scheduling works via the intrusive linked list of items awaiting "
 
 TEST_CASE("An asynchronous operation can be used to acquire an SQE, and then to wait for the completion of that work", "[io_uring][io_uring_context]")
 {
-  detail::io_uring_context::with_submittable_queue<
-    detail::io_uring_context::base> ctx(
-      32,
-      []() noexcept {
-        ::io_uring_params retr{};
-        retr.flags = IORING_SETUP_SQPOLL;
-        retr.sq_thread_idle = 5000;
-        return retr;
-      }());
+  io_uring_context ctx(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
   std::atomic<bool> done{false};
   auto sender =
     ctx.get_or_wait_for_sqe() |
@@ -458,15 +450,14 @@ TEST_CASE("An asynchronous operation can be used to acquire an SQE, and then to 
 }
 
 TEST_CASE("Operations can be cancelled", "[io_uring][io_uring_context]") {
-  detail::io_uring_context::with_submittable_queue<
-    detail::io_uring_context::base> ctx(
-      32,
-      []() noexcept {
-        ::io_uring_params retr{};
-        retr.flags = IORING_SETUP_SQPOLL;
-        retr.sq_thread_idle = 5000;
-        return retr;
-      }());
+  io_uring_context ctx(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
   auto [read, write] = []() {
     int fds[2];
     REQUIRE(::pipe(fds) != -1);
@@ -533,15 +524,14 @@ TEST_CASE("Simple, unstoppable I/O works", "[io_uring][io_uring_context]") {
     sqe.addr = reinterpret_cast<decltype(sqe.addr)>(&to_read);
     sqe.len = sizeof(to_read);
   };
-  detail::io_uring_context::with_submittable_queue<
-    detail::io_uring_context::base> ctx(
-      32,
-      []() noexcept {
-        ::io_uring_params retr{};
-        retr.flags = IORING_SETUP_SQPOLL;
-        retr.sq_thread_idle = 5000;
-        return retr;
-      }());
+  io_uring_context ctx(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
   bool write_invoked = false;
   auto write_sender = ctx.io(prepare_write);
   static_assert(
@@ -599,15 +589,14 @@ TEST_CASE("Stoppable I/O stops if stop is outstanding before it is started", "[i
   ::stdexec::prop env(
     ::stdexec::get_stop_token,
     source.get_token());
-  detail::io_uring_context::with_submittable_queue<
-    detail::io_uring_context::base> ctx(
-      32,
-      []() noexcept {
-        ::io_uring_params retr{};
-        retr.flags = IORING_SETUP_SQPOLL;
-        retr.sq_thread_idle = 5000;
-        return retr;
-      }());
+  io_uring_context ctx(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
   auto sender = ctx.io(prepare_read);
   static_assert(
     set_equivalent<
@@ -655,15 +644,14 @@ TEST_CASE("Stoppable I/O stops if stop is requested after it is started", "[io_u
   ::stdexec::prop env(
     ::stdexec::get_stop_token,
     source.get_token());
-  detail::io_uring_context::with_submittable_queue<
-    detail::io_uring_context::base> ctx(
-      32,
-      []() noexcept {
-        ::io_uring_params retr{};
-        retr.flags = IORING_SETUP_SQPOLL;
-        retr.sq_thread_idle = 5000;
-        return retr;
-      }());
+  io_uring_context ctx(
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
   bool done = false;
   auto op = ::stdexec::connect(
     ctx.io(prepare_read) | ::stdexec::let_stopped([&]() noexcept {
