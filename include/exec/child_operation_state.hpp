@@ -83,10 +83,10 @@ public:
   constexpr void destruct() noexcept {
     get().~child_();
   }
-private:
   child_& get() noexcept {
     return *std::launder(reinterpret_cast<child_*>(&storage_));
   }
+private:
   alignas(child_) unsigned char storage_[sizeof(child_)];
 };
 
