@@ -386,9 +386,8 @@ TEST_CASE("More tasks can be awaiting a SQE than there are SQEs (i.e. it's not "
 TEST_CASE("Scheduling works via the intrusive linked list of items awaiting "
   "submission", "[io_uring][io_uring_context]")
 {
-  using context_type = detail::io_uring_context::with_scheduler<
-    detail::io_uring_context::with_submittable_queue<
-      detail::io_uring_context::base>>;
+  using context_type = detail::io_uring_context::with_submittable_queue<
+    detail::io_uring_context::base>;
   context_type ctx(
     32,
     []() noexcept {
@@ -682,136 +681,69 @@ TEST_CASE("Stoppable I/O stops if stop is requested after it is started", "[io_u
       return done;
     });
 }
-//
-//TEST_CASE("Stoppable I/O works", "[io_uring][io_uring_context]") {
-//  auto [read, write] = []() {
-//    int fds[2];
-//    REQUIRE(::pipe(fds) != -1);
-//    return std::pair(
-//      exec::safe_file_descriptor(fds[0]),
-//      exec::safe_file_descriptor(fds[1]));
-//  }();
-//  const unsigned to_write = 5;
-//  unsigned to_read = 0;
-//  ::stdexec::inplace_stop_source source;
-//  struct env {
-//    auto query(const ::stdexec::get_stop_token_t&) const noexcept {
-//      return source_.get_token();
-//    }
-//    ::stdexec::inplace_stop_source& source_;
-//  };
-//  io_uring_context ctx(
-//    32,
-//    []() noexcept {
-//      ::io_uring_params retr{};
-//      retr.flags = IORING_SETUP_SQPOLL;
-//      retr.sq_thread_idle = 5000;
-//      return retr;
-//    }());
-//  std::atomic<bool> done{false};
-//  std::size_t completed = 0;
-//  const auto finish = [&]() noexcept {
-//    ++completed;
-//    if (completed == 2) {
-//      done.store(true, std::memory_order_relaxed);
-//    }
-//  };
-//  auto write_op = ::stdexec::connect(
-//    finally(
-//      ctx.io([&](::io_uring_sqe& sqe) noexcept {
-//        std::memset(&sqe, 0, sizeof(sqe));
-//        sqe.opcode = IORING_OP_WRITE;
-//        sqe.fd = write.native_handle();
-//        sqe.off = -1;
-//        sqe.addr = reinterpret_cast<decltype(sqe.addr)>(&to_write);
-//        sqe.len = sizeof(to_write);
-//      }) | ::stdexec::then([&](const ::io_uring_cqe& cqe) {
-//        CHECK(cqe.res == sizeof(to_write));
-//      }),
-//      ::stdexec::just() | ::stdexec::then(finish)),
-//    expect_void_receiver(env{source}));
-//  auto read_op = ::stdexec::connect(
-//    finally(
-//      ctx.io([&](::io_uring_sqe& sqe) noexcept {
-//        std::memset(&sqe, 0, sizeof(sqe));
-//        sqe.opcode = IORING_OP_READ;
-//        sqe.fd = read.native_handle();
-//        sqe.off = -1;
-//        sqe.addr = reinterpret_cast<decltype(sqe.addr)>(&to_read);
-//        sqe.len = sizeof(to_read);
-//      }) | ::stdexec::then([&](const ::io_uring_cqe& cqe) {
-//        CHECK(cqe.res == sizeof(to_read));
-//      }),
-//      ::stdexec::just() | ::stdexec::then(finish)),
-//    expect_void_receiver(env{source}));
-//  ::stdexec::start(write_op);
-//  ::stdexec::start(read_op);
-//  detail::io_uring_context::poll(ctx, done);
-//  CHECK(to_read == to_write);
-//}
-//
-//TEST_CASE("Stopping I/O works with run_on_polled_io_uring", "[io_uring][io_uring_context]") {
-//  auto [read, write] = []() {
-//    int fds[2];
-//    REQUIRE(::pipe(fds) != -1);
-//    return std::pair(
-//      exec::safe_file_descriptor(fds[0]),
-//      exec::safe_file_descriptor(fds[1]));
-//  }();
-//  unsigned to_read = 0;
-//  ::stdexec::inplace_stop_source source;
-//  auto sender = run_on_polled_io_uring(
-//    [&](io_uring_context& ctx) {
-//      return ctx.io([&](::io_uring_sqe& sqe) noexcept {
-//        std::memset(&sqe, 0, sizeof(sqe));
-//        sqe.opcode = IORING_OP_READ;
-//        sqe.fd = read.native_handle();
-//        sqe.off = -1;
-//        sqe.addr = reinterpret_cast<decltype(sqe.addr)>(&to_read);
-//        sqe.len = sizeof(to_read);
-//      }) | ::stdexec::then([](const ::io_uring_cqe&) {
-//        FAIL("Operation should end with set_stopped");
-//      }) | ::exec::write_env(
-//        ::stdexec::prop(
-//          ::stdexec::get_stop_token,
-//          source.get_token()));
-//    },
-//    32,
-//    []() noexcept {
-//      ::io_uring_params retr{};
-//      retr.flags = IORING_SETUP_SQPOLL;
-//      retr.sq_thread_idle = 5000;
-//      return retr;
-//    }());
-//  {
-//    struct env {
-//      auto query(const ::stdexec::get_stop_token_t&) const noexcept {
-//        return source_.get_token();
-//      }
-//      ::stdexec::inplace_stop_source& source_;
-//    };
-//    static_assert(
-//      set_equivalent<
-//        ::stdexec::completion_signatures_of_t<
-//          decltype(sender),
-//          env>,
-//        ::stdexec::completion_signatures<
-//          ::stdexec::set_value_t(),
-//          ::stdexec::set_stopped_t(),
-//          //  This is added by ::stdexec::then because our lambda isn't noexcept
-//          ::stdexec::set_error_t(std::exception_ptr)>>);
-//    static_assert(
-//      set_equivalent<
-//        ::stdexec::completion_signatures_of_t<
-//          const decltype(sender)&,
-//          env>,
-//        ::stdexec::completion_signatures<
-//          ::stdexec::set_value_t(),
-//          ::stdexec::set_stopped_t(),
-//          ::stdexec::set_error_t(std::exception_ptr)>>);
-//  }
-//  source.request_stop();
-//  CHECK(!::stdexec::sync_wait(std::move(sender)));
-//}
+
+TEST_CASE("Stopping I/O works with run_on_polled_io_uring", "[io_uring][io_uring_context]") {
+  auto [read, write] = []() {
+    int fds[2];
+    REQUIRE(::pipe(fds) != -1);
+    return std::pair(
+      exec::safe_file_descriptor(fds[0]),
+      exec::safe_file_descriptor(fds[1]));
+  }();
+  unsigned to_read = 0;
+  ::stdexec::inplace_stop_source source;
+  auto sender = run_on_polled_io_uring(
+    [&](io_uring_context& ctx) {
+      return ctx.io([&](::io_uring_sqe& sqe) noexcept {
+        std::memset(&sqe, 0, sizeof(sqe));
+        sqe.opcode = IORING_OP_READ;
+        sqe.fd = read.native_handle();
+        sqe.off = -1;
+        sqe.addr = reinterpret_cast<decltype(sqe.addr)>(&to_read);
+        sqe.len = sizeof(to_read);
+      }) | ::stdexec::then([](const ::io_uring_cqe&) {
+        FAIL("Operation should end with set_stopped");
+      }) | ::exec::write_env(
+        ::stdexec::prop(
+          ::stdexec::get_stop_token,
+          source.get_token()));
+    },
+    32,
+    []() noexcept {
+      ::io_uring_params retr{};
+      retr.flags = IORING_SETUP_SQPOLL;
+      retr.sq_thread_idle = 5000;
+      return retr;
+    }());
+  {
+    struct env {
+      auto query(const ::stdexec::get_stop_token_t&) const noexcept {
+        return source_.get_token();
+      }
+      ::stdexec::inplace_stop_source& source_;
+    };
+    static_assert(
+      set_equivalent<
+        ::stdexec::completion_signatures_of_t<
+          decltype(sender),
+          env>,
+        ::stdexec::completion_signatures<
+          ::stdexec::set_value_t(),
+          ::stdexec::set_stopped_t(),
+          //  This is added by ::stdexec::then because our lambda isn't noexcept
+          ::stdexec::set_error_t(std::exception_ptr)>>);
+    static_assert(
+      set_equivalent<
+        ::stdexec::completion_signatures_of_t<
+          const decltype(sender)&,
+          env>,
+        ::stdexec::completion_signatures<
+          ::stdexec::set_value_t(),
+          ::stdexec::set_stopped_t(),
+          ::stdexec::set_error_t(std::exception_ptr)>>);
+  }
+  source.request_stop();
+  CHECK(!::stdexec::sync_wait(std::move(sender)));
+}
 
 } // namespace
