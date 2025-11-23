@@ -84,7 +84,6 @@ public:
   template<typename ChildSender, typename Self>
     requires check_<ChildSender>
   constexpr decltype(auto) get(this Self&& self) noexcept {
-    using operation_state = child_<ChildSender>;
     return ::stdexec::__forward_like<Self>(
       *std::launder(
         reinterpret_cast<
@@ -113,7 +112,10 @@ public:
   template<typename ChildSender>
     requires check_<ChildSender>
   constexpr void destruct() noexcept {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdelete-non-abstract-non-virtual-dtor"
     get<ChildSender>().~child_<ChildSender>();
+#pragma clang diagnostic pop
   }
 };
 
