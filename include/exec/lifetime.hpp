@@ -50,6 +50,11 @@ using main_t = decltype(
   std::declval<::exec::storage_for_objects<Objects...>&>()(
     std::declval<Function>()));
 
+template<typename Function, ::exec::object... Objects>
+inline constexpr auto is_main_noexcept_v = noexcept(
+  std::declval<::exec::storage_for_objects<Objects...>&>()(
+    std::declval<Function>()));
+
 template<::exec::object... Objects>
 using destructor_t = decltype(
   std::declval<::exec::storage_for_objects<Objects...>&>().destroy(
@@ -111,22 +116,42 @@ using late_constructor_completion_signatures_t =
     remove_completion_signature_t,
     ::stdexec::completion_signatures<>>;
 
-template<::stdexec::sender Constructor, ::stdexec::sender Main, typename Env>
+template<
+  ::stdexec::sender Constructor,
+  typename Env,
+  typename Function,
+  ::exec::object_in<Env>... Objects>
   requires
     ::stdexec::sender_in<Constructor, Env> &&
-    ::stdexec::sender_in<Main, Env>
+    ::stdexec::sender_in<
+      main_t<Function, Objects...>,
+      Env>
 using stored_completion_signatures_t =
   ::stdexec::transform_completion_signatures<
-    late_constructor_completion_signatures_t<Constructor, Env>,
-    ::stdexec::completion_signatures_of_t<Main, Env>>;
+    ::stdexec::transform_completion_signatures<
+      late_constructor_completion_signatures_t<Constructor, Env>,
+      ::stdexec::completion_signatures_of_t<
+        main_t<Function, Objects...>,
+        Env>>,
+    std::conditional_t<
+      is_main_noexcept_v<Function, Objects...>,
+      ::stdexec::completion_signatures<>,
+      ::stdexec::completion_signatures<
+        ::stdexec::set_error_t(std::exception_ptr)>>>;
 
-template<::stdexec::sender Constructor, ::stdexec::sender Main, typename Env>
+template<
+  ::stdexec::sender Constructor,
+  typename Env,
+  typename Function,
+  ::exec::object_in<Env>... Objects>
   requires
     ::stdexec::sender_in<Constructor, Env> &&
-    ::stdexec::sender_in<Main, Env>
+    ::stdexec::sender_in<
+      main_t<Function, Objects...>,
+      Env>
 using storage_for_completion_signatures_t =
   ::exec::storage_for_completion_signatures<
-    stored_completion_signatures_t<Constructor, Main, Env>>;
+    stored_completion_signatures_t<Constructor, Env, Function, Objects...>>;
 
 template<
   typename Function,
@@ -160,8 +185,9 @@ private:
   using main_type_ = main_t<Function, Objects...>;
   using completion_type_ = storage_for_completion_signatures_t<
     constructor_type_,
-    main_type_,
-    env_type_>;
+    env_type_,
+    Function,
+    Objects...>;
   using destructor_type_ = destructor_t<Objects...>;
   using stenciled_destructor_type_ = stenciled_destructor_t<Objects...>;
   using children_base_ = ::exec::variant_child_operation_state<
@@ -185,9 +211,7 @@ private:
     children_base_& base = *this;
     base.template destruct<constructor_type_>();
   }
-  template<typename... Args>
-  constexpr void main_complete_(Args&&... args) noexcept {
-    completion_.arrive(std::forward<Args>(args)...);
+  constexpr void destroy_() noexcept {
     children_base_& base = *this;
     base.template destruct<main_type_>();
     std::apply(
@@ -198,6 +222,11 @@ private:
       },
       std::move(objects_));
     base.template start<destructor_type_>();
+  }
+  template<typename... Args>
+  constexpr void main_complete_(Args&&... args) noexcept {
+    completion_.arrive(std::forward<Args>(args)...);
+    destroy_();
   }
   constexpr void stenciled_destroy_(
     const std::array<bool, sizeof...(Objects)>& stencil) noexcept
@@ -275,9 +304,10 @@ public:
       try {
         impl();
       } catch (...) {
-        ::stdexec::set_error(
-          std::move(this->get_receiver()),
+        completion_.arrive(
+          ::stdexec::set_error,
           std::current_exception());
+        destroy_();
         return;
       }
     }
@@ -372,8 +402,9 @@ public:
     early_constructor_completion_signatures_t<constructor_type_, Env>,
     typename storage_for_completion_signatures_t<
       constructor_type_,
-      main_t<Function, Objects...>,
-      Env>::completion_signatures> get_completion_signatures(
+      Env,
+      Function,
+      Objects...>::completion_signatures> get_completion_signatures(
         this Self&&,
         const Env&) noexcept
   {

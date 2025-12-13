@@ -30,6 +30,7 @@
 #include <type_traits>
 #include <utility>
 
+#include <exec/construct.hpp>
 #include <exec/object.hpp>
 #include <exec/variant_sender.hpp>
 
@@ -261,6 +262,85 @@ TEST_CASE("Multiple non-void async objects work", "[lifetime]") {
   CHECK(s1.destroyed <= 10);
   CHECK(s2.destroyed > 8);
   CHECK(s2.destroyed <= 10);
+  CHECK(s1.destroyed != s2.destroyed);
+}
+
+TEST_CASE("Multiple non-void async objects work with a throwing invocable", "[lifetime]") {
+  std::size_t n{0};
+  state s1{n};
+  state s2{n};
+  std::optional<std::size_t> invoked;
+  const auto canary = std::make_shared<int>(5);
+  auto f = [&](int& i, int& j) -> decltype(::stdexec::just()) {
+    CHECK(!invoked);
+    CHECK(i == 5);
+    CHECK(j == 6);
+    invoked = ++n;
+    throw std::logic_error("TESTING");
+  };
+  int_object o{s1, 5};
+  static_assert(
+    std::is_same_v<
+      ::stdexec::completion_signatures<
+        ::stdexec::set_value_t()>,
+      ::stdexec::completion_signatures_of_t<
+        decltype(o.construct(nullptr)),
+        ::stdexec::env<>>>);
+  static_assert(
+    std::is_same_v<
+      ::stdexec::completion_signatures<
+        ::stdexec::set_value_t()>,
+      ::stdexec::completion_signatures_of_t<
+        decltype(
+          ::exec::construct(
+            o.construct(nullptr),
+            o.construct(nullptr))),
+        ::stdexec::env<>>>);
+  auto sender = ::exec::lifetime(
+    std::move(f),
+    std::move(o),
+    int_object{s2, 6});
+  auto op = ::stdexec::connect(
+    std::move(sender),
+    expect_error_receiver{});
+  CHECK(s1.construct_canary.use_count() == 2);
+  CHECK(s1.destroy_canary.use_count() == 1);
+  CHECK(s1.construct_invoked > 0);
+  CHECK(s1.construct_invoked <= 2);
+  CHECK(!s1.constructed);
+  CHECK(!s1.destroy_invoked);
+  CHECK(!s1.destroyed);
+  CHECK(s2.construct_canary.use_count() == 2);
+  CHECK(s2.destroy_canary.use_count() == 1);
+  CHECK(s2.construct_invoked > 0);
+  CHECK(s2.construct_invoked <= 2);
+  CHECK(s1.construct_invoked != s2.construct_invoked);
+  CHECK(!s2.constructed);
+  CHECK(!s2.destroy_invoked);
+  CHECK(!s2.destroyed);
+  CHECK(canary.use_count() == 1);
+  CHECK(!invoked);
+  ::stdexec::start(op);
+  CHECK(s1.construct_canary.use_count() == 1);
+  CHECK(s1.destroy_canary.use_count() == 1);
+  CHECK(s2.construct_canary.use_count() == 1);
+  CHECK(s2.destroy_canary.use_count() == 1);
+  CHECK(canary.use_count() == 1);
+  CHECK(s1.constructed > 2);
+  CHECK(s1.constructed <= 4);
+  CHECK(s2.constructed > 2);
+  CHECK(s2.constructed <= 4);
+  CHECK(s1.constructed != s2.constructed);
+  CHECK(invoked == 5);
+  CHECK(s1.destroy_invoked > 5);
+  CHECK(s1.destroy_invoked <= 7);
+  CHECK(s2.destroy_invoked > 5);
+  CHECK(s2.destroy_invoked <= 7);
+  CHECK(s1.destroy_invoked != s2.destroy_invoked);
+  CHECK(s1.destroyed > 7);
+  CHECK(s1.destroyed <= 9);
+  CHECK(s2.destroyed > 7);
+  CHECK(s2.destroyed <= 9);
   CHECK(s1.destroyed != s2.destroyed);
 }
 
