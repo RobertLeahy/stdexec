@@ -57,8 +57,8 @@ private:
       parent_op_->set_error(Tag<ChildSender>{}, std::forward<E>(e));
     }
     template<typename... Args>
-    constexpr void set_stopped(const Args&...) noexcept {
-      parent_op_->set_stopped(Tag<ChildSender>{});
+    constexpr void set_stopped(Args&&... args) noexcept {
+      parent_op_->set_stopped(Tag<ChildSender>{}, std::forward<Args>(args)...);
     }
     constexpr Env get_env() const noexcept {
       return parent_op_->get_env(Tag<ChildSender>{});
