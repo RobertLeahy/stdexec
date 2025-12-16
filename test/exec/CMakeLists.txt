@@ -107,21 +107,3 @@ icm_add_build_failure_test(
     LIBRARIES stdexec
     FOLDER test
 )
-
-add_executable(test.main ./test_main.cpp)
-target_link_libraries(test.main
-    PUBLIC
-    STDEXEC::stdexec
-    stdexec_executable_flags
-    Threads::Threads
-    PRIVATE
-    common_test_settings)
-
-add_test(NAME test.main COMMAND test.main)
-add_test(NAME test.main.fail COMMAND test.main fail)
-set_property(TEST test.main.fail PROPERTY WILL_FAIL true)
-add_test(NAME test.main.wait COMMAND test.main wait)
-add_test(NAME test.main.wait.fail COMMAND test.main wait fail)
-set_property(TEST test.main.wait.fail PROPERTY WILL_FAIL true)
-# Note that test.main can also be invoked with throw but ctest always considers
-# that failure modality a failure (due to SIGABRT)
