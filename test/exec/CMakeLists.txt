@@ -117,3 +117,21 @@ icm_add_build_failure_test(
     LIBRARIES stdexec
     FOLDER test
 )
+
+add_executable(test.async_main ./test_async_main.cpp)
+target_link_libraries(test.async_main
+    PUBLIC
+    STDEXEC::stdexec
+    stdexec_executable_flags
+    Threads::Threads
+    PRIVATE
+    common_test_settings)
+
+add_test(NAME test.async_main COMMAND test.async_main)
+add_test(NAME test.async_main.fail COMMAND test.async_main fail)
+set_property(TEST test.async_main.fail PROPERTY WILL_FAIL true)
+add_test(NAME test.async_main.wait COMMAND test.async_main wait)
+add_test(NAME test.async_main.wait.fail COMMAND test.async_main wait fail)
+set_property(TEST test.async_main.wait.fail PROPERTY WILL_FAIL true)
+# Note that test.async_main can also be invoked with throw but ctest always
+# considers that failure modality a failure (due to SIGABRT)
