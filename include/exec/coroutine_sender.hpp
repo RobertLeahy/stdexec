@@ -19,232 +19,324 @@
 #pragma once
 
 #include <coroutine>
+#include <cstddef>
 #include <exception>
-#include <functional>
-#include <new>
-#include <optional>
+#include <tuple>
 #include <type_traits>
 #include <utility>
-#include <variant>
 #include <stdexec/execution.hpp>
+#include "storage_for_completion_signatures.hpp"
 
 namespace exec {
 
+template<typename>
+struct coroutine_sender;
+
 namespace detail::coroutine_sender {
 
-template<typename Stored, typename Sent>
-struct variant_traits {
-  using storage_type = std::variant<
-    std::monostate,
-    Stored,
-    std::exception_ptr>;
-  using value_completion_signature = ::stdexec::set_value_t(Sent);
-  template<typename T>
-  static bool maybe_fail(storage_type&& storage, T& t) noexcept {
-    if (const auto ptr = std::get_if<std::exception_ptr>(&storage); ptr) {
-      t.set_error(std::move(*ptr));
-      return true;
-    }
-    return false;
-  }
-  template<typename T>
-  static void store(storage_type& storage, T&& t) noexcept {
-    try {
-      storage.template emplace<Stored>(std::forward<T>(t));
-    } catch (...) {
-      storage.template emplace<std::exception_ptr>(std::current_exception());
-    }
-  }
-};
-
+template<typename>
+struct filter_completion_signature;
 template<typename... Args>
-struct traits : variant_traits<Args..., Args...> {
-  using base = variant_traits<Args..., Args...>;
-  template<typename T>
-  static void complete(typename base::storage_type&& storage, T& t) noexcept {
-    if (!base::maybe_fail(std::move(storage), t)) {
-      const auto ptr = std::get_if<Args...>(&storage);
-      t.set_value(std::move(*ptr));
-    }
-  }
-};
+struct filter_completion_signature<::stdexec::set_value_t(Args...)>
+  : std::type_identity<::stdexec::set_value_t(Args...)> {};
 
-template<typename... Args>
-  requires (std::is_reference_v<Args> && ...)
-struct traits<Args...> : variant_traits<
-  std::reference_wrapper<std::remove_reference_t<Args>>...,
-  Args...>
-{
-  using base = variant_traits<
-    std::reference_wrapper<std::remove_reference_t<Args>>...,
-    Args...>;
-  template<typename T>
-  static void complete(typename base::storage_type&& storage, T& t) noexcept {
-    if (!base::maybe_fail(std::move(storage), t)) {
-      const auto ptr = std::get_if<std::reference_wrapper<std::remove_reference_t<Args>>...>(&storage);
-      t.set_value(std::forward<Args...>(ptr->get()));
-    }
-  }
-  static void store(typename base::storage_type& storage, Args&&... args) noexcept {
-    //  Turns rvalue references into lvalue references which is necessary to construct a reference_wrapper in the base
-    base::store(storage, args...);
-  }
-};
-
+template<typename T>
+struct value_completion_signatures : std::type_identity<
+  ::stdexec::completion_signatures<::stdexec::set_value_t(T)>> {};
 template<>
-struct traits<> {
-  using storage_type = std::optional<std::exception_ptr>;
-  using value_completion_signature = ::stdexec::set_value_t();
-  template<typename T>
-  static void complete(const storage_type& storage, T& t) noexcept {
-    if (storage) {
-      t.set_error(std::move(*storage));
-    } else {
-      t.set_value();
-    }
-  }
-  static void store(const storage_type&) noexcept {}
-};
-
-template<typename Derived, typename... Args>
-struct promise_base {
-  constexpr void return_value(Args&&... args) noexcept {
-    static_cast<Derived&>(*this).return_impl(std::forward<Args>(args)...);
-  }
-};
-
-template<typename Derived>
-struct promise_base<Derived> {
-  constexpr void return_void() noexcept {
-    static_cast<Derived&>(*this).return_impl();
-  }
-};
-
+struct value_completion_signatures<void> : std::type_identity<
+  ::stdexec::completion_signatures<::stdexec::set_value_t()>> {};
 template<typename... Args>
-class sender {
-  struct operation_state_base_;
-  using traits_ = coroutine_sender::traits<Args...>;
-public:
-  struct promise_type : promise_base<promise_type, Args...> {
-    constexpr auto get_return_object() noexcept {
-      return sender(*this);
+struct value_completion_signatures<::stdexec::completion_signatures<Args...>>
+  : std::type_identity<
+      ::stdexec::completion_signatures<
+        typename filter_completion_signature<Args>::type...>> {};
+
+template<typename T>
+using value_completion_signatures_t =
+  typename value_completion_signatures<T>::type;
+
+struct return_void {};
+
+template<typename Signatures>
+using storage_for_completion_signatures_t =
+  ::exec::storage_for_completion_signatures<
+    ::stdexec::transform_completion_signatures<
+      value_completion_signatures_t<Signatures>,
+      ::stdexec::completion_signatures<
+        ::stdexec::set_error_t(std::exception_ptr)>>>;
+
+template<typename Signatures>
+using completion_signatures = ::stdexec::transform_completion_signatures<
+  typename storage_for_completion_signatures_t<Signatures>::
+    completion_signatures,
+  ::stdexec::completion_signatures<
+    ::stdexec::set_stopped_t()>>;
+
+template<typename Signatures>
+struct arrive_invocable {
+  using type_ = storage_for_completion_signatures_t<Signatures>;
+  template<typename... Args>
+    requires requires(type_ t) {
+      t.arrive(::stdexec::set_value, std::declval<Args>()...);
     }
-    constexpr static sender get_return_object_on_allocation_failure() noexcept {
-      return {};
-    }
-    constexpr std::suspend_always initial_suspend() noexcept {
-      return {};
-    }
-    constexpr std::suspend_never final_suspend() noexcept {
-      STDEXEC_ASSERT(op_);
-      traits_::complete(std::move(storage_), *op_);
-      return {};
-    }
-    void unhandled_exception() noexcept {
-      storage_ = std::current_exception();
-    }
-    constexpr auto unhandled_stopped() noexcept {
-      op_->set_stopped(std::coroutine_handle<promise_type>::from_promise(*this));
-      return std::noop_coroutine();
-    }
-    template<::stdexec::sender Sender>
-    constexpr auto await_transform(Sender&& sender) /*noexcept(????)*/ {
-      return ::stdexec::as_awaitable(std::forward<Sender>(sender), *this);
-    }
-    constexpr void return_impl(Args&&... args) noexcept {
-      traits_::store(storage_, std::forward<Args>(args)...);
-    }
-    operation_state_base_* op_{nullptr};
-    typename traits_::storage_type storage_;
+  constexpr void operator()(Args&&... args) const noexcept {
+    storage_.arrive(::stdexec::set_value, std::forward<Args>(args)...);
+  }
+  type_& storage_;
+};
+
+template<typename Object>
+concept is_return_void = std::is_same_v<
+  std::remove_cvref_t<Object>,
+  return_void>;
+
+template<typename Object, typename Signatures>
+concept is_return_single =
+  !is_return_void<Object> &&
+  requires(storage_for_completion_signatures_t<Signatures> storage) {
+    storage.arrive(::stdexec::set_value, std::declval<Object>());
   };
-  sender() = default;
-  constexpr explicit sender(promise_type& promise) noexcept
-    : promise_(&promise)
-  {}
-  using sender_concept = ::stdexec::sender_t;
-  template<typename Env>
-  consteval ::stdexec::completion_signatures<
-    typename traits_::value_completion_signature,
-    ::stdexec::set_error_t(std::exception_ptr),
-    ::stdexec::set_stopped_t()> get_completion_signatures(const Env&) && noexcept
-  {
+
+//  This is because std::apply isn't SFINAE-friendly
+template<typename Object, typename Signatures, typename>
+struct check_apply;
+template<typename Object, typename Signatures, std::size_t... Is>
+struct check_apply<Object, Signatures, std::index_sequence<Is...>> :
+  std::bool_constant<
+    requires(const arrive_invocable<Signatures> i) {
+      i(std::get<Is>(std::declval<Object>())...);
+    }> {};
+
+template<typename Object, typename Signatures>
+concept is_return_multiple =
+  !is_return_void<Object> &&
+  check_apply<
+    Object,
+    Signatures,
+    std::make_index_sequence<std::tuple_size<Object>::value>>::value;
+
+template<typename>
+struct promise;
+
+using env = ::stdexec::prop<::stdexec::get_stop_token_t, ::stdexec::inplace_stop_token>;
+
+template<typename Signatures>
+struct operation_state_base {
+  storage_for_completion_signatures_t<Signatures> storage;
+  virtual void complete() noexcept = 0;
+  virtual void stopped(promise<Signatures>&) noexcept = 0;
+  virtual env get_env() const noexcept = 0;
+};
+
+struct on_stop_request {
+  void operator()() && noexcept {
+    source_.request_stop();
+  }
+  ::stdexec::inplace_stop_source& source_;
+};
+
+template<typename StopToken>
+struct operation_state_stop_source_base {
+  template<typename Receiver>
+  ::stdexec::inplace_stop_token get_stop_token(const Receiver&) const noexcept {
+    return source_.get_token();
+  }
+  template<typename Receiver>
+  void attach(const Receiver& r) noexcept {
+    STDEXEC_ASSERT(!callback_);
+    callback_.emplace(
+      ::stdexec::get_stop_token(::stdexec::get_env(r)),
+      on_stop_request{source_});
+  }
+  void detach() noexcept {
+    STDEXEC_ASSERT(callback_);
+    callback_.reset();
+  }
+private:
+  ::stdexec::inplace_stop_source source_;
+  std::optional<
+    ::stdexec::stop_callback_for_t<
+      StopToken,
+      on_stop_request>> callback_;
+};
+
+template<typename StopToken>
+  requires ::stdexec::unstoppable_token<StopToken>
+struct operation_state_stop_source_base<StopToken> {
+  template<typename Receiver>
+  static ::stdexec::inplace_stop_token get_stop_token(const Receiver&) noexcept {
     return {};
   }
-private:
-  struct operation_state_base_ {
-    virtual void set_value(Args&&...) noexcept = 0;
-    virtual void set_error(std::exception_ptr) noexcept = 0;
-    virtual void set_stopped(std::coroutine_handle<promise_type>) noexcept = 0;
-  };
-  template<::stdexec::receiver Receiver>
-  struct operation_state_ : private operation_state_base_ {
-    constexpr explicit operation_state_(promise_type* promise, Receiver r) noexcept
-      : promise_(promise),
-        r_(std::move(r))
-    {}
-    operation_state_(operation_state_&&) = delete;
-    operation_state_& operator=(operation_state_&&) = delete;
-    constexpr ~operation_state_() noexcept {
-      if (promise_) {
-        std::coroutine_handle<promise_type>::from_promise(*promise_).destroy();
-      }
-    }
-    void start() & noexcept {
-      if (promise_) {
-        const auto handle = std::coroutine_handle<promise_type>::from_promise(
-          *promise_);
-        STDEXEC_ASSERT(!promise_->op_);
-        promise_->op_ = this;
-        promise_ = nullptr;
-        handle.resume();
-      } else {
-        try {
-          ::stdexec::set_error(
-            std::move(r_),
-            std::make_exception_ptr(std::bad_alloc{}));
-        } catch (...) {
-          ::stdexec::set_error(
-            std::move(r_),
-            std::current_exception());
-        }
-      }
-    }
-  private:
-    virtual void set_value(Args&&... args) noexcept override {
-      ::stdexec::set_value(std::move(r_), std::forward<Args>(args)...);
-    }
-    virtual void set_error(std::exception_ptr ex) noexcept override {
-      ::stdexec::set_error(std::move(r_), std::move(ex));
-    }
-    virtual void set_stopped(const std::coroutine_handle<promise_type> handle) noexcept override {
-      STDEXEC_ASSERT(!promise_);
-      //  Ensures the coroutine frame will be cleaned up by the operation state's lifetime ending
-      promise_ = &handle.promise();
-      ::stdexec::set_stopped(std::move(r_));
-    }
-    promise_type* promise_;
-    Receiver r_;
-  };
-public:
+  static void detach() noexcept {}
   template<typename Receiver>
-    requires ::stdexec::receiver_of<
-      Receiver,
-      ::stdexec::completion_signatures_of_t<
-        sender,
-        ::stdexec::env_of_t<Receiver>>>
-  constexpr auto connect(Receiver r) && noexcept {
-    return operation_state_<Receiver>(promise_, std::move(r));
+  static void attach(const Receiver&) noexcept {}
+};
+
+template<typename StopToken>
+  requires std::is_same_v<::stdexec::inplace_stop_token, StopToken>
+struct operation_state_stop_source_base<StopToken> {
+  template<typename Receiver>
+  ::stdexec::inplace_stop_token get_stop_token(const Receiver& r) const noexcept {
+    return ::stdexec::get_stop_token(
+      ::stdexec::get_env(r));
   }
-private:
-  promise_type* promise_{nullptr};
+  static void detach() noexcept {}
+  template<typename Receiver>
+  static void attach(const Receiver&) noexcept {}
+};
+
+template<typename Signatures>
+struct promise {
+  constexpr auto unhandled_stopped() noexcept {
+    STDEXEC_ASSERT(op);
+    op->stopped(*this);
+    return std::noop_coroutine();
+  }
+  //  TODO: Mappings?
+  template<typename Sender>
+  constexpr auto await_transform(Sender&& sender) noexcept(
+    noexcept(
+      ::stdexec::as_awaitable(
+        std::declval<Sender>(),
+        std::declval<promise&>())))
+  {
+    return ::stdexec::as_awaitable(std::forward<Sender>(sender), *this);
+  }
+  auto get_env() const noexcept {
+    STDEXEC_ASSERT(op);
+    return op->get_env();
+  }
+  constexpr auto get_return_object() noexcept {
+    return ::exec::coroutine_sender(*this);
+  }
+  constexpr std::suspend_always initial_suspend() noexcept {
+    STDEXEC_ASSERT(!op);
+    return {};
+  }
+  constexpr std::suspend_never final_suspend() noexcept {
+    STDEXEC_ASSERT(op);
+    op->complete();
+    return {};
+  }
+  template<is_return_void Object>
+  constexpr void return_value(Object&&) noexcept {
+    STDEXEC_ASSERT(op);
+    op->storage.arrive(::stdexec::set_value);
+  }
+  template<is_return_single<Signatures> Object>
+  constexpr void return_value(Object&& o) noexcept {
+    STDEXEC_ASSERT(op);
+    op->storage.arrive(::stdexec::set_value, std::forward<Object>(o));
+  }
+  template<is_return_multiple<Signatures> Object>
+  constexpr void return_value(Object&& o) noexcept {
+    STDEXEC_ASSERT(op);
+    std::apply(
+      arrive_invocable<Signatures>{op->storage},
+      std::forward<Object>(o));
+  }
+  void unhandled_exception() noexcept {
+    STDEXEC_ASSERT(op);
+    op->storage.arrive(::stdexec::set_error, std::current_exception());
+  }
+  operation_state_base<Signatures>* op{nullptr};
+};
+
+template<typename Signatures, ::stdexec::receiver Receiver>
+  requires
+    ::stdexec::receiver_of<
+      Receiver,
+      completion_signatures<Signatures>>
+class operation_state :
+  operation_state_base<Signatures>,
+  operation_state_stop_source_base<
+    ::stdexec::stop_token_of_t<
+      ::stdexec::env_of_t<Receiver>>>
+{
+  using base_ = operation_state_base<Signatures>;
+  using promise_type_ = promise<Signatures>;
+  using stop_token_type_ = ::stdexec::stop_token_of_t<
+    ::stdexec::env_of_t<Receiver>>;
+  using stop_token_base_ = operation_state_stop_source_base<stop_token_type_>;
+  promise_type_* promise_;
+  Receiver r_;
+  virtual void complete() noexcept override {
+    stop_token_base_::detach();
+    std::move(base_::storage).complete(std::move(r_));
+  }
+  virtual void stopped(promise_type_& promise) noexcept override {
+    STDEXEC_ASSERT(!promise_);
+    //  This causes the operation state to clean up the coroutine frame
+    promise_ = &promise;
+    stop_token_base_::detach();
+    ::stdexec::set_stopped(std::move(r_));
+  }
+  virtual env get_env() const noexcept override {
+    return env(
+      ::stdexec::get_stop_token,
+      stop_token_base_::get_stop_token(r_));
+  }
+public:
+  constexpr explicit operation_state(
+    promise<Signatures>& promise,
+    Receiver r) noexcept
+    : promise_(&promise),
+      r_(std::move(r))
+  {}
+  operation_state(const operation_state&) = delete;
+  operation_state& operator=(const operation_state&) = delete;
+  constexpr ~operation_state() noexcept {
+    if (promise_) {
+      std::coroutine_handle<promise_type_>::from_promise(*promise_).destroy();
+    }
+  }
+  void start() & noexcept {
+    STDEXEC_ASSERT(promise_);
+    auto&& promise = *std::exchange(promise_, nullptr);
+    STDEXEC_ASSERT(!promise.op);
+    promise.op = this;
+    stop_token_base_::attach(r_);
+    std::coroutine_handle<promise_type_>::from_promise(promise).resume();
+  }
 };
 
 }
 
-template<typename T>
-using coroutine_sender = std::conditional_t<
-  std::is_same_v<T, void>,
-  detail::coroutine_sender::sender<>,
-  detail::coroutine_sender::sender<T>>;
+inline constexpr detail::coroutine_sender::return_void coroutine_sender_void;
+
+template<typename Signatures>
+struct coroutine_sender {
+  using sender_concept = ::stdexec::sender_t;
+  using promise_type = detail::coroutine_sender::promise<Signatures>;
+  explicit constexpr coroutine_sender(promise_type& promise) noexcept
+    : promise_(&promise)
+  {}
+  constexpr coroutine_sender(coroutine_sender&& other) noexcept
+    : promise_(std::exchange(other.promise_, nullptr))
+  {}
+  coroutine_sender& operator=(coroutine_sender&) = delete;
+  constexpr ~coroutine_sender() noexcept {
+    if (promise_) {
+      std::coroutine_handle<promise_type>::from_promise(*promise_).destroy();
+    }
+  }
+  template<typename Env>
+  consteval detail::coroutine_sender::completion_signatures<Signatures>
+    get_completion_signatures(const Env&) && noexcept
+  {
+    return {};
+  }
+  template<typename Receiver>
+  constexpr auto connect(Receiver r) && noexcept {
+    STDEXEC_ASSERT(promise_);
+    return detail::coroutine_sender::operation_state<Signatures, Receiver>(
+      *std::exchange(promise_, nullptr),
+      std::move(r));
+  }
+private:
+  promise_type* promise_;
+};
+
 
 } // namespace exec
