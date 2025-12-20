@@ -77,6 +77,7 @@ set(exec_test_sources
     test_sync_object.cpp
     test_nest_scopes.cpp
     test_on_execution_context.cpp
+    test_coroutine_sender.cpp
     )
 
 add_executable(test.exec ${exec_test_sources})
