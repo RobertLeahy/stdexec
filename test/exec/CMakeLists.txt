@@ -70,6 +70,7 @@ set(exec_test_sources
     test_unless_stop_requested.cpp
     test_lifetime.cpp
     test_on_execution_context.cpp
+    test_coroutine_sender.cpp
     )
 
 add_executable(test.exec ${exec_test_sources})
