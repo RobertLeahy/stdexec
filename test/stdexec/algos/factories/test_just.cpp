@@ -20,6 +20,7 @@
 #include <test_common/type_helpers.hpp>
 
 #include <cstddef>
+#include <functional>
 #include <stdexcept>
 #include <utility>
 
@@ -180,5 +181,36 @@ namespace {
     CHECK(invoked == 0);
     ::stdexec::start(op);
     CHECK(invoked == 1);
+  }
+
+  TEST_CASE("just unwraps std::reference_wrapper", "[factories][just]") {
+    int i = 5;
+    bool invoked = false;
+    auto snd = ::stdexec::just(std::ref(i));
+    static_assert(
+      set_equivalent<
+        ::stdexec::completion_signatures_of_t<
+          decltype(snd),
+          ::stdexec::env<>>,
+        ::stdexec::completion_signatures<
+          ::stdexec::set_value_t(int&)>>);
+    struct receiver {
+      using receiver_concept = ::stdexec::receiver_t;
+      void set_value(std::reference_wrapper<int>) && noexcept {
+        FAIL_CHECK("Reference wrapper not unwrapped");
+      }
+      void set_value(int& i) && noexcept {
+        CHECK(!invoked_);
+        invoked_ = true;
+        CHECK(i == 5);
+        CHECK(&i == &i_);
+      }
+      int& i_;
+      bool& invoked_;
+    };
+    auto op = ::stdexec::connect(snd, receiver{i, invoked});
+    CHECK(!invoked);
+    ::stdexec::start(op);
+    CHECK(invoked);
   }
 } // namespace

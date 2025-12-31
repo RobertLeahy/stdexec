@@ -24,6 +24,9 @@
 #include "__receivers.hpp"
 #include "__type_traits.hpp"
 
+#include <functional>
+#include <type_traits>
+
 STDEXEC_PRAGMA_PUSH()
 STDEXEC_PRAGMA_IGNORE_GNU("-Wmissing-braces")
 
@@ -31,6 +34,36 @@ namespace stdexec {
   /////////////////////////////////////////////////////////////////////////////
   // [execution.senders.factories]
   namespace __just {
+    template<class _Return>
+    struct __make_completion_signature {
+      template<class... _Args>
+      using __f = _Return(std::unwrap_reference_t<_Args>...);
+    };
+
+    template<class>
+    inline constexpr bool __is_reference_wrapper = false;
+    template<class _T>
+    inline constexpr bool __is_reference_wrapper<std::reference_wrapper<_T>> = true;
+
+    template<class _T>
+    constexpr decltype(auto) __forward(_T&& __t) noexcept {
+      return static_cast<_T&&>(__t);
+    }
+
+    template<class _T>
+      requires __is_reference_wrapper<std::remove_cvref_t<_T>>
+    constexpr decltype(auto) __forward(_T&& __t) noexcept {
+      return __t.get();
+    }
+
+    template<class _Tag>
+    struct __complete {
+      template<typename _R, typename... _Args>
+      constexpr void operator()(_R&& __r, _Args&&... __args) const noexcept {
+        _Tag()(static_cast<_R&&>(__r), __just::__forward(static_cast<_Args&&>(__args))...);
+      }
+    };
+
     template <class _JustTag>
     struct __impl : __sexpr_defaults {
       using __tag_t = _JustTag::__tag_t;
@@ -43,13 +76,13 @@ namespace stdexec {
       static constexpr auto get_completion_signatures =
         []<class _Sender>(_Sender&&, auto&&...) noexcept {
           static_assert(sender_expr_for<_Sender, _JustTag>);
-          return completion_signatures<__mapply<__qf<__tag_t>, __decay_t<__data_of<_Sender>>>>{};
+          return completion_signatures<__mapply<__make_completion_signature<__tag_t>, __decay_t<__data_of<_Sender>>>>{};
         };
 
       static constexpr auto start =
         []<class _State, class _Receiver>(_State& __state, _Receiver& __rcvr) noexcept -> void {
         stdexec::__apply(
-          __tag_t(), static_cast<_State&&>(__state), static_cast<_Receiver&&>(__rcvr));
+          __complete<__tag_t>(), static_cast<_State&&>(__state), static_cast<_Receiver&&>(__rcvr));
       };
 
       static constexpr auto submit =
@@ -57,7 +90,7 @@ namespace stdexec {
         static_assert(sender_expr_for<_Sender, _JustTag>);
         auto&& __state = get_state(static_cast<_Sender&&>(__sndr), __rcvr);
         stdexec::__apply(
-          __tag_t(), static_cast<decltype(__state)>(__state), static_cast<_Receiver&&>(__rcvr));
+          __complete<__tag_t>(), static_cast<decltype(__state)>(__state), static_cast<_Receiver&&>(__rcvr));
       };
     };
 
