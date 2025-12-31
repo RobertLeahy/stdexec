@@ -40,7 +40,7 @@ TEST_CASE("io_uring sockets are asynchronously created and destroyed", "[io_urin
     return std::filesystem::exists(std::move(ss).str());
   };
   ::stdexec::sync_wait(
-    run_on_polled_io_uring(
+    run_on_blocking_io_uring(
       [&](io_uring_context& ctx) {
         return lifetime(
           [&](io_uring_socket::type& socket) {
@@ -70,7 +70,7 @@ TEST_CASE("io_uring sockets fail to construct when the arguments thereto make no
   std::size_t invoked = 0;
   CHECK_THROWS(
     ::stdexec::sync_wait(
-      run_on_polled_io_uring(
+      run_on_blocking_io_uring(
         [&](io_uring_context& ctx) {
           return lifetime(
             [](auto&&...) {
@@ -98,7 +98,7 @@ TEST_CASE("io_uring sockets can be connected to one another", "[io_uring][io_uri
   const std::string_view sv("Hello world!");
   std::vector<std::byte> buffer(sv.size());
   ::stdexec::sync_wait(
-    run_on_polled_io_uring(
+    run_on_blocking_io_uring(
       [&](io_uring_context& ctx) {
         const io_uring_socket object(
           ctx,
