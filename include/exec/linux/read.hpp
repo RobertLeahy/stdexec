@@ -19,6 +19,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <span>
 #include "can_populate_sqe.hpp"
 #include "read_some.hpp"
@@ -39,6 +40,29 @@ template<can_populate_sqe FD>
           ::exec::read_some(fd, buffer) |
           ::stdexec::then([&buffer](const std::size_t bytes_written) noexcept {
             buffer = buffer.subspan(bytes_written);
+            return buffer.empty();
+          }));
+    });
+}
+
+template<can_populate_sqe FD>
+::stdexec::sender auto read(
+  FD& fd,
+  const std::span<std::byte> buffer,
+  const std::uint64_t offset) noexcept
+{
+  return
+    ::stdexec::just(buffer, offset) |
+    ::stdexec::let_value([&fd](
+      std::span<std::byte>& buffer,
+      std::uint64_t& offset) noexcept {
+      return
+        ::exec::repeat_effect_until(
+          ::exec::read_some(fd, buffer, offset) |
+          ::stdexec::then([&buffer, &offset](
+            const std::size_t bytes_written) noexcept {
+            buffer = buffer.subspan(bytes_written);
+            offset += bytes_written;
             return buffer.empty();
           }));
     });

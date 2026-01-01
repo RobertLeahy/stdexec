@@ -71,6 +71,9 @@ set(exec_test_sources
     test_lifetime.cpp
     test_on_execution_context.cpp
     test_coroutine_sender.cpp
+    test_io_uring_filesystem.cpp
+    test_io_uring_tmpfile.cpp
+    test_tmpdir.cpp
     )
 
 add_executable(test.exec ${exec_test_sources})

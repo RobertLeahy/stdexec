@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <span>
 #include "can_populate_sqe.hpp"
 #include "io_or_throw.hpp"
@@ -32,24 +33,35 @@ namespace exec {
 template<can_populate_sqe FD>
 ::stdexec::sender auto read_some(
   FD& fd,
-  const std::span<std::byte> buffer) noexcept
+  const std::span<std::byte> buffer,
+  const std::uint64_t offset) noexcept
 {
   return
     exec::io_or_throw(
       fd.context(),
       "IORING_OP_READ",
-      [&fd, buffer](::io_uring_sqe& sqe) noexcept {
+      [&fd, buffer, offset](::io_uring_sqe& sqe) noexcept {
           std::memset(&sqe, 0, sizeof(sqe));
           sqe.opcode = IORING_OP_READ;
           fd.populate_sqe(sqe);
           sqe.addr = reinterpret_cast<std::uintptr_t>(buffer.data());
           sqe.len = buffer.size();
-          sqe.off = -1;
+          sqe.off = offset;
       }) |
     ::stdexec::then([](const ::io_uring_cqe& cqe) noexcept {
       return std::size_t(cqe.res);
     });
 
+}
+
+template<can_populate_sqe FD>
+::stdexec::sender auto read_some(
+  FD& fd,
+  const std::span<std::byte> buffer) noexcept
+{
+  constexpr auto current_offset =
+    std::numeric_limits<decltype(::io_uring_sqe::off)>::max();
+  return ::exec::read_some(fd, buffer, current_offset);
 }
 
 } // namespace exec
