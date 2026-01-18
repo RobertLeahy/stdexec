@@ -192,7 +192,7 @@ namespace STDEXEC {
   template <class _Receiver, class _ChildOp>
   concept inlinable_receiver = receiver<_Receiver> &&
     requires (_ChildOp* __child_op) {
-      { _Receiver::make_receiver_for(__child_op) } noexcept -> same_as<_Receiver>;
+      { _Receiver::make_receiver_for(__child_op) } noexcept -> __std::same_as<_Receiver>;
     };
 
   namespace __detail {
