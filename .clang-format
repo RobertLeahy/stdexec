@@ -121,9 +121,6 @@ RequiresClausePosition: OwnLine
 IndentRequiresClause: true
 SeparateDefinitionBlocks: Leave
 ShortNamespaceLines: 0
-SortIncludes:
-  Enabled: true
-  IgnoreCase: false
 SortUsingDeclarations: false
 SpaceAfterCStyleCast: true
 SpaceAfterLogicalNot: false
