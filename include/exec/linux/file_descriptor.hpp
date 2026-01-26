@@ -21,7 +21,6 @@
 #include <type_traits>
 #include <utility>
 #include "close.hpp"
-#include "has_file_descriptor.hpp"
 #include "io_uring_context.hpp"
 #include "../variant_sender.hpp"
 #include "../../stdexec/execution.hpp"
