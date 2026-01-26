@@ -39,10 +39,10 @@ struct socket_object {
       protocol_(protocol)
   {}
 
-  ::stdexec::sender auto operator()(type* storage) const noexcept {
+  ::STDEXEC::sender auto operator()(type* storage) const noexcept {
     return
       ::exec::socket(ctx_, domain_, type_, protocol_) |
-      ::stdexec::then([&ctx = ctx_, storage](const int fd) noexcept {
+      ::STDEXEC::then([&ctx = ctx_, storage](const int fd) noexcept {
         auto* ptr = new(storage) type(ctx, fd);
         return ptr->close();
       });

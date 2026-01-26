@@ -30,7 +30,7 @@ namespace exec {
 namespace detail::sync {
 
 template<::exec::can_populate_sqe FD>
-::stdexec::sender auto impl(
+::STDEXEC::sender auto impl(
   FD& fd,
   const std::uint64_t offset,
   const std::uint32_t length,
@@ -48,7 +48,7 @@ template<::exec::can_populate_sqe FD>
         sqe.len = length;
         sqe.fsync_flags = flags;
       }) |
-    ::stdexec::then([](const ::io_uring_cqe&) noexcept {
+    ::STDEXEC::then([](const ::io_uring_cqe&) noexcept {
       //  The CQE conveys no information beyond success or failure which
       //  io_or_throw handles.
     });
@@ -57,12 +57,12 @@ template<::exec::can_populate_sqe FD>
 } // namespace detail::sync
 
 template<can_populate_sqe FD>
-::stdexec::sender auto sync(FD& fd) noexcept {
+::STDEXEC::sender auto sync(FD& fd) noexcept {
   return detail::sync::impl(fd, 0, 0, 0);
 }
 
 template<can_populate_sqe FD>
-::stdexec::sender auto sync(
+::STDEXEC::sender auto sync(
   FD& fd,
   const std::uint64_t offset,
   const std::uint32_t length) noexcept
@@ -71,12 +71,12 @@ template<can_populate_sqe FD>
 }
 
 template<can_populate_sqe FD>
-::stdexec::sender auto datasync(FD& fd) noexcept {
+::STDEXEC::sender auto datasync(FD& fd) noexcept {
   return detail::sync::impl(fd, 0, 0, IORING_FSYNC_DATASYNC);
 }
 
 template<can_populate_sqe FD>
-::stdexec::sender auto datasync(
+::STDEXEC::sender auto datasync(
   FD& fd,
   const std::uint64_t offset,
   const std::uint32_t length) noexcept

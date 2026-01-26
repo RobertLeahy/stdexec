@@ -30,10 +30,10 @@
 namespace exec {
 
 template<can_populate_sqe FD>
-::stdexec::sender auto accept(FD& fd, const int flags = 0) noexcept {
+::STDEXEC::sender auto accept(FD& fd, const int flags = 0) noexcept {
   return
-    ::stdexec::just(::sockaddr_storage{}, ::socklen_t{sizeof(::sockaddr_storage)}) |
-    ::stdexec::let_value([&fd, flags](::sockaddr_storage& addr, ::socklen_t& addr_len) noexcept {
+    ::STDEXEC::just(::sockaddr_storage{}, ::socklen_t{sizeof(::sockaddr_storage)}) |
+    ::STDEXEC::let_value([&fd, flags](::sockaddr_storage& addr, ::socklen_t& addr_len) noexcept {
       return
         exec::io_or_throw(
           fd.context(),
@@ -46,8 +46,8 @@ template<can_populate_sqe FD>
             sqe.addr2 = reinterpret_cast<std::uintptr_t>(&addr_len);
             sqe.accept_flags = static_cast<std::uint32_t>(flags);
           }) |
-        ::stdexec::let_value([&addr](const ::io_uring_cqe& cqe) noexcept {
-          return ::stdexec::just(cqe.res, addr);
+        ::STDEXEC::let_value([&addr](const ::io_uring_cqe& cqe) noexcept {
+          return ::STDEXEC::just(cqe.res, addr);
         });
     });
 }

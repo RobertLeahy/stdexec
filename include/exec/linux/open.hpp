@@ -34,15 +34,15 @@ namespace exec {
 namespace detail::open {
 
 template<typename Populate>
-inline ::stdexec::sender auto impl(
+inline ::STDEXEC::sender auto impl(
   ::exec::io_uring_context& ctx,
   Populate populate,
   const char* const path,
   const ::open_how how) noexcept
 {
   return
-    ::stdexec::just(how) |
-    ::stdexec::let_value([&ctx, populate, path](::open_how& stored_how) noexcept {
+    ::STDEXEC::just(how) |
+    ::STDEXEC::let_value([&ctx, populate, path](::open_how& stored_how) noexcept {
       return
         exec::io_or_throw(
           ctx,
@@ -55,7 +55,7 @@ inline ::stdexec::sender auto impl(
             sqe.len = static_cast<std::uint32_t>(sizeof(stored_how));
             sqe.off = reinterpret_cast<std::uintptr_t>(&stored_how);
           }) |
-        ::stdexec::then([](const ::io_uring_cqe& cqe) noexcept {
+        ::STDEXEC::then([](const ::io_uring_cqe& cqe) noexcept {
           return cqe.res;
         });
     });
@@ -63,7 +63,7 @@ inline ::stdexec::sender auto impl(
 
 } // namespace detail::open
 
-inline ::stdexec::sender auto open(
+inline ::STDEXEC::sender auto open(
   io_uring_context& ctx,
   const int dirfd,
   const char* const path,
@@ -82,7 +82,7 @@ inline ::stdexec::sender auto open(
     how);
 }
 
-inline ::stdexec::sender auto open(
+inline ::STDEXEC::sender auto open(
   io_uring_context& ctx,
   const int dirfd,
   const char* const path,
@@ -95,7 +95,7 @@ inline ::stdexec::sender auto open(
     how);
 }
 
-inline ::stdexec::sender auto open(
+inline ::STDEXEC::sender auto open(
   io_uring_context& ctx,
   const char* const path,
   const int flags,
@@ -104,7 +104,7 @@ inline ::stdexec::sender auto open(
   return open(ctx, AT_FDCWD, path, flags, mode);
 }
 
-inline ::stdexec::sender auto open(
+inline ::STDEXEC::sender auto open(
   io_uring_context& ctx,
   const char* const path,
   const ::open_how how) noexcept
@@ -113,7 +113,7 @@ inline ::stdexec::sender auto open(
 }
 
 template<can_populate_sqe FD>
-::stdexec::sender auto open(
+::STDEXEC::sender auto open(
   FD& fd,
   const char* const path,
   const int flags,
@@ -132,7 +132,7 @@ template<can_populate_sqe FD>
 }
 
 template<can_populate_sqe FD>
-::stdexec::sender auto open(
+::STDEXEC::sender auto open(
   FD& fd,
   const char* const path,
   const ::open_how how) noexcept

@@ -53,10 +53,10 @@ struct accept_object {
       flags_(flags)
   {}
 
-  ::stdexec::sender auto operator()(type* storage) const noexcept {
+  ::STDEXEC::sender auto operator()(type* storage) const noexcept {
     return
       ::exec::accept(fd_, flags_) |
-      ::stdexec::then([&ctx = fd_.context(), storage](const int fd, const ::sockaddr_storage& addr) noexcept {
+      ::STDEXEC::then([&ctx = fd_.context(), storage](const int fd, const ::sockaddr_storage& addr) noexcept {
         auto* ptr = new(storage) type(ctx, fd, addr);
         return ptr->close();
       });

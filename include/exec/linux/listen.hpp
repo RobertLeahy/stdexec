@@ -28,7 +28,7 @@
 namespace exec {
 
 template<can_populate_sqe FD>
-::stdexec::sender auto listen(FD& fd, const std::uint64_t backlog) noexcept {
+::STDEXEC::sender auto listen(FD& fd, const std::uint64_t backlog) noexcept {
   return
     exec::io_or_throw(
       fd.context(),
@@ -39,7 +39,7 @@ template<can_populate_sqe FD>
           fd.populate_sqe(sqe);
           sqe.len = backlog;
       }) |
-    ::stdexec::then([](const ::io_uring_cqe&) noexcept {
+    ::STDEXEC::then([](const ::io_uring_cqe&) noexcept {
       //  The CQE conveys no information beyond success or failure which
       //  io_or_throw handles
     });

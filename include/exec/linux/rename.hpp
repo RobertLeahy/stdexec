@@ -32,7 +32,7 @@ namespace exec {
 namespace detail::rename {
 
 template<typename Populate>
-::stdexec::sender auto impl(
+::STDEXEC::sender auto impl(
   exec::io_uring_context& ctx,
   Populate populate,
   const char* const old_path,
@@ -54,7 +54,7 @@ template<typename Populate>
           sqe.off = reinterpret_cast<std::uintptr_t>(new_path);
           sqe.rename_flags = flags;
       }) |
-    ::stdexec::then([](const ::io_uring_cqe&) noexcept {
+    ::STDEXEC::then([](const ::io_uring_cqe&) noexcept {
       //  The CQE conveys no information beyond success or failure which
       //  io_or_throw handles.
     });
@@ -62,7 +62,7 @@ template<typename Populate>
 
 } // namespace detail::rename
 
-inline ::stdexec::sender auto rename(
+inline ::STDEXEC::sender auto rename(
   io_uring_context& ctx,
   const int old_dirfd,
   const char* const old_path,
@@ -80,7 +80,7 @@ inline ::stdexec::sender auto rename(
 }
 
 template<has_file_descriptor OldFD, has_file_descriptor NewFD>
-::stdexec::sender auto rename(
+::STDEXEC::sender auto rename(
   OldFD& old_fd,
   const char* const old_path,
   NewFD& new_fd,
@@ -96,7 +96,7 @@ template<has_file_descriptor OldFD, has_file_descriptor NewFD>
     flags);
 }
 
-inline ::stdexec::sender auto rename(
+inline ::STDEXEC::sender auto rename(
   io_uring_context& ctx,
   const char* const old_path,
   const char* const new_path,

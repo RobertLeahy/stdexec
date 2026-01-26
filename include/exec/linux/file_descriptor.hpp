@@ -47,15 +47,15 @@ struct file_descriptor {
   constexpr void populate_sqe(::io_uring_sqe& sqe) noexcept {
     sqe.fd = native_handle();
   }
-  ::stdexec::sender auto close() noexcept {
+  ::STDEXEC::sender auto close() noexcept {
     auto close_sender =
       ::exec::close(*this) |
-      ::stdexec::then([this]() noexcept { fd_ = -1; });
-    using just_sender_t = decltype(::stdexec::just());
+      ::STDEXEC::then([this]() noexcept { fd_ = -1; });
+    using just_sender_t = decltype(::STDEXEC::just());
     using close_sender_t = decltype(close_sender);
     if (fd_ < 0) {
       return ::exec::variant_sender<just_sender_t, close_sender_t>(
-        ::stdexec::just());
+        ::STDEXEC::just());
     }
     return ::exec::variant_sender<just_sender_t, close_sender_t>(
       std::move(close_sender));

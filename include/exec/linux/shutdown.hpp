@@ -27,7 +27,7 @@
 namespace exec {
 
 template<can_populate_sqe FD>
-::stdexec::sender auto shutdown(FD& fd, const int how) noexcept {
+::STDEXEC::sender auto shutdown(FD& fd, const int how) noexcept {
   return
     exec::io_or_throw(
       fd.context(),
@@ -38,7 +38,7 @@ template<can_populate_sqe FD>
           fd.populate_sqe(sqe);
           sqe.len = how;
       }) |
-    ::stdexec::then([](const ::io_uring_cqe&) noexcept {
+    ::STDEXEC::then([](const ::io_uring_cqe&) noexcept {
       //  The CQE conveys no information beyond success or failure which
       //  io_or_throw handles
     });

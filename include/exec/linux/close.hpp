@@ -27,18 +27,18 @@
 namespace exec {
 
 template<can_populate_sqe FD>
-::stdexec::sender auto close(FD& fd) noexcept {
+::STDEXEC::sender auto close(FD& fd) noexcept {
   return
     fd.context().io([&fd](::io_uring_sqe& sqe) noexcept {
       std::memset(&sqe, 0, sizeof(sqe));
       sqe.opcode = IORING_OP_CLOSE;
       fd.populate_sqe(sqe);
     }) |
-    ::stdexec::then([](const ::io_uring_cqe& cqe) noexcept {
+    ::STDEXEC::then([](const ::io_uring_cqe& cqe) noexcept {
       STDEXEC_ASSERT(!cqe.res);
       (void)cqe;
     }) |
-    ::stdexec::unstoppable;
+    ::STDEXEC::unstoppable;
 }
 
 } // namespace exec

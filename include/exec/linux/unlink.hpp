@@ -32,7 +32,7 @@ namespace exec {
 namespace detail::unlink {
 
 template<typename Populate>
-::stdexec::sender auto impl(
+::STDEXEC::sender auto impl(
   exec::io_uring_context& ctx,
   Populate populate,
   const char* const path,
@@ -49,7 +49,7 @@ template<typename Populate>
           sqe.addr = reinterpret_cast<std::uintptr_t>(path);
           sqe.unlink_flags = flags;
       }) |
-    ::stdexec::then([](const ::io_uring_cqe&) noexcept {
+    ::STDEXEC::then([](const ::io_uring_cqe&) noexcept {
       //  The CQE conveys no information beyond success or failure which
       //  io_or_throw handles.
     });
@@ -57,7 +57,7 @@ template<typename Populate>
 
 } // namespace detail::unlink
 
-inline ::stdexec::sender auto unlink(
+inline ::STDEXEC::sender auto unlink(
   io_uring_context& ctx,
   const int dirfd,
   const char* const path,
@@ -71,7 +71,7 @@ inline ::stdexec::sender auto unlink(
 }
 
 template<can_populate_sqe FD>
-::stdexec::sender auto unlink(
+::STDEXEC::sender auto unlink(
   FD& fd,
   const char* const path,
   const std::uint32_t flags = 0) noexcept
@@ -83,7 +83,7 @@ template<can_populate_sqe FD>
     flags);
 }
 
-inline ::stdexec::sender auto unlink(
+inline ::STDEXEC::sender auto unlink(
   io_uring_context& ctx,
   const char* const path,
   const std::uint32_t flags = 0) noexcept

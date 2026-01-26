@@ -26,7 +26,7 @@
 
 namespace exec {
 
-inline ::stdexec::sender auto socket(
+inline ::STDEXEC::sender auto socket(
   io_uring_context& ctx,
   const int domain,
   const int type,
@@ -43,7 +43,7 @@ inline ::stdexec::sender auto socket(
         sqe.off = type;
         sqe.len = protocol;
       }) |
-    ::stdexec::then([](const ::io_uring_cqe& cqe) noexcept {
+    ::STDEXEC::then([](const ::io_uring_cqe& cqe) noexcept {
       return cqe.res;
     });
 }

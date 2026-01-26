@@ -31,7 +31,7 @@
 namespace exec {
 
 template<can_populate_sqe FD>
-::stdexec::sender auto read_some(
+::STDEXEC::sender auto read_some(
   FD& fd,
   const std::span<std::byte> buffer,
   const std::uint64_t offset) noexcept
@@ -48,14 +48,14 @@ template<can_populate_sqe FD>
           sqe.len = buffer.size();
           sqe.off = offset;
       }) |
-    ::stdexec::then([](const ::io_uring_cqe& cqe) noexcept {
+    ::STDEXEC::then([](const ::io_uring_cqe& cqe) noexcept {
       return std::size_t(cqe.res);
     });
 
 }
 
 template<can_populate_sqe FD>
-::stdexec::sender auto read_some(
+::STDEXEC::sender auto read_some(
   FD& fd,
   const std::span<std::byte> buffer) noexcept
 {

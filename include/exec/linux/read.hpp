@@ -29,16 +29,16 @@
 namespace exec {
 
 template<can_populate_sqe FD>
-::stdexec::sender auto read(FD& fd, const std::span<std::byte> buffer)
+::STDEXEC::sender auto read(FD& fd, const std::span<std::byte> buffer)
   noexcept
 {
   return
-    ::stdexec::just(buffer) |
-    ::stdexec::let_value([&fd](std::span<std::byte>& buffer) noexcept {
+    ::STDEXEC::just(buffer) |
+    ::STDEXEC::let_value([&fd](std::span<std::byte>& buffer) noexcept {
       return
         ::exec::repeat_effect_until(
           ::exec::read_some(fd, buffer) |
-          ::stdexec::then([&buffer](const std::size_t bytes_written) noexcept {
+          ::STDEXEC::then([&buffer](const std::size_t bytes_written) noexcept {
             buffer = buffer.subspan(bytes_written);
             return buffer.empty();
           }));
@@ -46,20 +46,20 @@ template<can_populate_sqe FD>
 }
 
 template<can_populate_sqe FD>
-::stdexec::sender auto read(
+::STDEXEC::sender auto read(
   FD& fd,
   const std::span<std::byte> buffer,
   const std::uint64_t offset) noexcept
 {
   return
-    ::stdexec::just(buffer, offset) |
-    ::stdexec::let_value([&fd](
+    ::STDEXEC::just(buffer, offset) |
+    ::STDEXEC::let_value([&fd](
       std::span<std::byte>& buffer,
       std::uint64_t& offset) noexcept {
       return
         ::exec::repeat_effect_until(
           ::exec::read_some(fd, buffer, offset) |
-          ::stdexec::then([&buffer, &offset](
+          ::STDEXEC::then([&buffer, &offset](
             const std::size_t bytes_written) noexcept {
             buffer = buffer.subspan(bytes_written);
             offset += bytes_written;

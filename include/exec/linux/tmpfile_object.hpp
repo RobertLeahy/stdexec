@@ -28,6 +28,7 @@
 #include "io_uring_context.hpp"
 #include "open.hpp"
 #include "../coroutine_sender.hpp"
+#include "../enter_scope_sender.hpp"
 #include "../../stdexec/execution.hpp"
 
 #include <fcntl.h>
@@ -74,7 +75,7 @@ struct tmpfile_object {
   {}
 
   template<typename Self>
-  ::exec::enter_sender auto operator()(this Self&& self, type* storage) noexcept {
+  ::exec::enter_scope_sender auto operator()(this Self&& self, type* storage) noexcept {
     auto path_template = std::forward<Self>(self).path_template_;
     auto& ctx = self.ctx_;
     const int flags = self.flags_;
@@ -101,7 +102,7 @@ struct tmpfile_object {
           }
           co_return true;
         }) |
-      ::stdexec::then([storage]() noexcept {
+      ::STDEXEC::then([storage]() noexcept {
         auto* ptr = std::launder(reinterpret_cast<type*>(storage));
         return ptr->close();
       });

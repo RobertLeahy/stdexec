@@ -29,7 +29,7 @@
 namespace exec {
 
 template<can_populate_sqe FD, typename SockAddr>
-::stdexec::sender auto bind(FD& fd, const SockAddr& addr) noexcept {
+::STDEXEC::sender auto bind(FD& fd, const SockAddr& addr) noexcept {
   return
     exec::io_or_throw(
       fd.context(),
@@ -42,7 +42,7 @@ template<can_populate_sqe FD, typename SockAddr>
             std::addressof(addr));
           sqe.addr2 = sizeof(addr);
       }) |
-    ::stdexec::then([](const ::io_uring_cqe&) noexcept {
+    ::STDEXEC::then([](const ::io_uring_cqe&) noexcept {
       //  The CQE conveys no information beyond success or failure which
       //  io_or_throw handles
     });

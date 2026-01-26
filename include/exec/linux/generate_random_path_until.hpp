@@ -47,7 +47,7 @@ inline std::span<char> suffix_or_throw(const std::span<char> path_template) {
   return std::span<char>(base, path_template.end());
 }
 
-inline ::stdexec::sender auto fill_alnum_some(
+inline ::STDEXEC::sender auto fill_alnum_some(
   file_descriptor& fd,
   const std::span<char> out) noexcept
 {
@@ -65,7 +65,7 @@ inline ::stdexec::sender auto fill_alnum_some(
     out.size());
   return
     ::exec::read_some(fd, bytes) |
-    ::stdexec::then([out](const std::size_t bytes_read) noexcept {
+    ::STDEXEC::then([out](const std::size_t bytes_read) noexcept {
       const auto view = out.first(bytes_read);
       std::size_t filled = 0;
       for (const unsigned char byte : view) {
@@ -79,20 +79,20 @@ inline ::stdexec::sender auto fill_alnum_some(
     });
 }
 
-inline ::stdexec::sender auto fill_alnum(
+inline ::STDEXEC::sender auto fill_alnum(
   file_descriptor& fd,
   const std::span<char> out) noexcept
 {
   return
-    ::stdexec::just(out) |
-    ::stdexec::let_value([&fd](std::span<char>& out) noexcept {
+    ::STDEXEC::just(out) |
+    ::STDEXEC::let_value([&fd](std::span<char>& out) noexcept {
       return
         ::exec::repeat_effect_until(
-          ::stdexec::just() |
-          ::stdexec::let_value([&fd, &out]() noexcept {
+          ::STDEXEC::just() |
+          ::STDEXEC::let_value([&fd, &out]() noexcept {
             return generate_random_path_until::fill_alnum_some(fd, out);
           }) |
-          ::stdexec::then([&out](const std::size_t filled) noexcept {
+          ::STDEXEC::then([&out](const std::size_t filled) noexcept {
             out = out.subspan(filled);
             return out.empty();
           }));
@@ -104,7 +104,7 @@ inline ::stdexec::sender auto fill_alnum(
 namespace exec {
 
 template<typename Invocable>
-::stdexec::sender auto generate_random_path_until(
+::STDEXEC::sender auto generate_random_path_until(
   io_uring_context& ctx,
   std::string path_template,
   Invocable invocable) noexcept

@@ -33,7 +33,7 @@ namespace exec {
 namespace detail::stat {
 
 template<typename Populate>
-inline ::stdexec::sender auto impl(
+inline ::STDEXEC::sender auto impl(
   exec::io_uring_context& ctx,
   Populate populate,
   const char* const path,
@@ -42,8 +42,8 @@ inline ::stdexec::sender auto impl(
 {
   using type = struct ::statx;
   return
-    ::stdexec::just(type{}) |
-    ::stdexec::let_value([&ctx, populate, path, mask, flags](type& out) noexcept {
+    ::STDEXEC::just(type{}) |
+    ::STDEXEC::let_value([&ctx, populate, path, mask, flags](type& out) noexcept {
       return
         exec::io_or_throw(
           ctx,
@@ -57,7 +57,7 @@ inline ::stdexec::sender auto impl(
             sqe.len = mask;
             sqe.addr2 = reinterpret_cast<std::uintptr_t>(&out);
           }) |
-        ::stdexec::then([&out](const ::io_uring_cqe&) noexcept {
+        ::STDEXEC::then([&out](const ::io_uring_cqe&) noexcept {
           return out;
         });
     });
@@ -66,7 +66,7 @@ inline ::stdexec::sender auto impl(
 } // namespace detail::stat
 
 template<can_populate_sqe FD>
-::stdexec::sender auto stat(
+::STDEXEC::sender auto stat(
   FD& fd,
   const char* const path,
   const std::uint32_t mask = STATX_BASIC_STATS,
@@ -81,7 +81,7 @@ template<can_populate_sqe FD>
 }
 
 template<can_populate_sqe FD>
-::stdexec::sender auto stat(
+::STDEXEC::sender auto stat(
   FD& fd,
   const std::uint32_t mask = STATX_BASIC_STATS,
   const std::uint32_t flags = 0) noexcept
@@ -94,7 +94,7 @@ template<can_populate_sqe FD>
     flags | AT_EMPTY_PATH);
 }
 
-inline ::stdexec::sender auto stat(
+inline ::STDEXEC::sender auto stat(
   io_uring_context& ctx,
   const int dirfd,
   const char* const path,
@@ -109,7 +109,7 @@ inline ::stdexec::sender auto stat(
     flags);
 }
 
-inline ::stdexec::sender auto stat(
+inline ::STDEXEC::sender auto stat(
   io_uring_context& ctx,
   const int fd,
   const std::uint32_t mask = STATX_BASIC_STATS,
@@ -123,7 +123,7 @@ inline ::stdexec::sender auto stat(
     flags | AT_EMPTY_PATH);
 }
 
-inline ::stdexec::sender auto stat(
+inline ::STDEXEC::sender auto stat(
   io_uring_context& ctx,
   const char* const path,
   const std::uint32_t mask = STATX_BASIC_STATS,

@@ -22,6 +22,7 @@
 #include "file_descriptor.hpp"
 #include "io_uring_context.hpp"
 #include "open.hpp"
+#include "../enter_scope_sender.hpp"
 #include "../../stdexec/execution.hpp"
 
 #include <fcntl.h>
@@ -73,10 +74,10 @@ struct open_object {
     : open_object(ctx, AT_FDCWD, path, how)
   {}
 
-  ::exec::enter_sender auto operator()(type* storage) const noexcept {
+  ::exec::enter_scope_sender auto operator()(type* storage) const noexcept {
     return
       ::exec::open(ctx_, dirfd_, path_, how_) |
-      ::stdexec::then([&ctx = ctx_, storage](const int fd) noexcept {
+      ::STDEXEC::then([&ctx = ctx_, storage](const int fd) noexcept {
         auto* ptr = new(storage) type(ctx, fd);
         return ptr->close();
       });

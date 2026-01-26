@@ -33,7 +33,7 @@ namespace exec {
 namespace detail::mkdir {
 
 template<typename Populate>
-::stdexec::sender auto impl(
+::STDEXEC::sender auto impl(
   exec::io_uring_context& ctx,
   Populate populate,
   const char* const path,
@@ -50,7 +50,7 @@ template<typename Populate>
           sqe.addr = reinterpret_cast<std::uintptr_t>(path);
           sqe.len = static_cast<std::uint32_t>(mode);
       }) |
-    ::stdexec::then([](const ::io_uring_cqe&) noexcept {
+    ::STDEXEC::then([](const ::io_uring_cqe&) noexcept {
       //  The CQE conveys no information beyond success or failure which
       //  io_or_throw handles.
     });
@@ -58,7 +58,7 @@ template<typename Populate>
 
 } // namespace detail::mkdir
 
-inline ::stdexec::sender auto mkdir(
+inline ::STDEXEC::sender auto mkdir(
   io_uring_context& ctx,
   const int dirfd,
   const char* const path,
@@ -72,7 +72,7 @@ inline ::stdexec::sender auto mkdir(
 }
 
 template<can_populate_sqe FD>
-::stdexec::sender auto mkdir(
+::STDEXEC::sender auto mkdir(
   FD& fd,
   const char* const path,
   const ::mode_t mode = 0777) noexcept
@@ -84,7 +84,7 @@ template<can_populate_sqe FD>
     mode);
 }
 
-inline ::stdexec::sender auto mkdir(
+inline ::STDEXEC::sender auto mkdir(
   io_uring_context& ctx,
   const char* const path,
   const ::mode_t mode = 0777) noexcept

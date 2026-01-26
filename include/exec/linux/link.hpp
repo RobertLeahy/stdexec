@@ -29,7 +29,7 @@
 
 namespace exec {
 
-inline ::stdexec::sender auto link(
+inline ::STDEXEC::sender auto link(
   io_uring_context& ctx,
   const int old_dirfd,
   const char* const old_path,
@@ -51,14 +51,14 @@ inline ::stdexec::sender auto link(
           sqe.addr2 = reinterpret_cast<std::uint64_t>(new_path);
           sqe.hardlink_flags = flags;
       }) |
-    ::stdexec::then([](const ::io_uring_cqe&) noexcept {
+    ::STDEXEC::then([](const ::io_uring_cqe&) noexcept {
       //  The CQE conveys no information beyond success or failure which
       //  io_or_throw handles.
     });
 }
 
 template<has_file_descriptor OldFD, has_file_descriptor NewFD>
-::stdexec::sender auto link(
+::STDEXEC::sender auto link(
   OldFD& old_fd,
   const char* const old_path,
   NewFD& new_fd,
@@ -74,7 +74,7 @@ template<has_file_descriptor OldFD, has_file_descriptor NewFD>
     flags);
 }
 
-inline ::stdexec::sender auto link(
+inline ::STDEXEC::sender auto link(
   io_uring_context& ctx,
   const char* const old_path,
   const char* const new_path,
