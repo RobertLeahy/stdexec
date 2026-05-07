@@ -236,38 +236,35 @@ namespace STDEXEC
     using __index_t        = __msize_t<_Idx>;
 
     template <class... _Args>
-    [[nodiscard]]
     STDEXEC_ATTRIBUTE(always_inline)
-    constexpr decltype(auto) set_value(_Args&&... __args) noexcept
+    constexpr void set_value(_Args&&... __args) noexcept
     {
       static_assert(
         __noexcept_of<__sexpr_impl<_Tag>::__complete, __index_t, _State&, set_value_t, _Args...>);
-      return __sexpr_impl<_Tag>::__complete(__index_t(),
-                                            __state_,
-                                            STDEXEC::set_value,
-                                            static_cast<_Args&&>(__args)...);
+      __sexpr_impl<_Tag>::__complete(__index_t(),
+                                     __state_,
+                                     STDEXEC::set_value,
+                                     static_cast<_Args&&>(__args)...);
     }
 
     template <class _Error>
-    [[nodiscard]]
     STDEXEC_ATTRIBUTE(always_inline)
-    constexpr decltype(auto) set_error(_Error&& __err) noexcept
+    constexpr void set_error(_Error&& __err) noexcept
     {
       static_assert(
         __noexcept_of<__sexpr_impl<_Tag>::__complete, __index_t, _State&, set_error_t, _Error>);
-      return __sexpr_impl<_Tag>::__complete(__index_t(),
-                                            __state_,
-                                            STDEXEC::set_error,
-                                            static_cast<_Error&&>(__err));
+      __sexpr_impl<_Tag>::__complete(__index_t(),
+                                     __state_,
+                                     STDEXEC::set_error,
+                                     static_cast<_Error&&>(__err));
     }
 
-    [[nodiscard]]
     STDEXEC_ATTRIBUTE(always_inline)
-    constexpr decltype(auto) set_stopped() noexcept
+    constexpr void set_stopped() noexcept
     {
       static_assert(
         __noexcept_of<__sexpr_impl<_Tag>::__complete, __index_t, _State&, set_stopped_t>);
-      return __sexpr_impl<_Tag>::__complete(__index_t(), __state_, STDEXEC::set_stopped);
+      __sexpr_impl<_Tag>::__complete(__index_t(), __state_, STDEXEC::set_stopped);
     }
 
     STDEXEC_ATTRIBUTE(nodiscard, always_inline)
