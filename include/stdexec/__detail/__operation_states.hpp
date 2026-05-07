@@ -20,7 +20,6 @@
 // include these after __execution_fwd.hpp
 #include "__concepts.hpp"
 #include "__tag_invoke.hpp"
-#include "__trampoline.hpp"
 
 #include <type_traits>
 
@@ -37,45 +36,20 @@ namespace STDEXEC
   template <class _Op>
   concept __has_start_member = requires(_Op &__op) { __op.start(); };
 
-  template <class _Op>
-  using __start_result_t = decltype(__declval<_Op&>().start());
-
-  struct start_or_defer_t
+  struct start_t
   {
     template <class _Op>
-      requires __has_start_member<_Op> && __same_as<__start_result_t<_Op>, void>
+      requires __has_start_member<_Op>
     STDEXEC_ATTRIBUTE(always_inline)
     constexpr void operator()(_Op &__op) const noexcept
     {
       static_assert(noexcept(__op.start()), "start() members must be noexcept");
+      static_assert(__same_as<decltype(__op.start()), void>, "start() members must return void");
       __op.start();
     }
 
     template <class _Op>
-      requires __has_start_member<_Op> && __trampoline_unit<__start_result_t<_Op>>
-    [[nodiscard]]
-    STDEXEC_ATTRIBUTE(always_inline)
-    constexpr auto operator()(_Op &__op) const noexcept -> __start_result_t<_Op>
-    {
-      static_assert(noexcept(__op.start()), "start() members must be noexcept");
-      return __op.start();
-    }
-  };
-
-  inline constexpr start_or_defer_t start_or_defer{};
-
-  struct start_t
-  {
-    template <class _Op>
-      requires __callable<start_or_defer_t, _Op&>
-    STDEXEC_ATTRIBUTE(always_inline)
-    constexpr void operator()(_Op &__op) const noexcept
-    {
-      STDEXEC::__trampoline(STDEXEC::start_or_defer, __op);
-    }
-
-    template <class _Op>
-      requires (!__callable<start_or_defer_t, _Op&>) && __tag_invocable<start_t, _Op &>
+      requires __has_start_member<_Op> || __tag_invocable<start_t, _Op &>
     [[deprecated("the use of tag_invoke for start is deprecated")]]
     STDEXEC_ATTRIBUTE(always_inline)  //
       constexpr void operator()(_Op &__op) const noexcept

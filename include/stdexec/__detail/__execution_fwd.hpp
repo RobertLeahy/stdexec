@@ -68,15 +68,6 @@ namespace STDEXEC
   struct indeterminate_domain;
 
   //////////////////////////////////////////////////////////////////////////////////////////////////
-  struct set_value_or_defer_t;
-  struct set_error_or_defer_t;
-  struct set_stopped_or_defer_t;
-
-  extern set_value_or_defer_t const   set_value_or_defer;
-  extern set_error_or_defer_t const   set_error_or_defer;
-  extern set_stopped_or_defer_t const set_stopped_or_defer;
-
-  //////////////////////////////////////////////////////////////////////////////////////////////////
   struct set_value_t;
   struct set_error_t;
   struct set_stopped_t;
@@ -235,10 +226,6 @@ namespace STDEXEC
 
   template <class _Sender>
   extern bool const enable_sender;
-
-  //////////////////////////////////////////////////////////////////////////////////////////////////
-  struct start_or_defer_t;
-  extern start_or_defer_t const start_or_defer;
 
   //////////////////////////////////////////////////////////////////////////////////////////////////
   struct start_t;
