@@ -249,6 +249,40 @@ namespace STDEXEC
         }
       }
     }
+
+    template <class _Fn, class... _As>
+      requires __trampoline_unit<__call_result_t<_Fn, _As...>>
+    constexpr void __run_from(_Fn&& __fn, _As&&... __as) noexcept
+    {
+      using __unit_t = __call_result_t<_Fn, _As...>;
+
+      if constexpr (std::is_void_v<__unit_result_t<__unit_t>>)
+      {
+        __unit_t __unit(static_cast<_Fn&&>(__fn)(static_cast<_As&&>(__as)...));
+        __done   __out;
+        (void) __advance(__unit, __out);
+      }
+      else
+      {
+        using __variant_t = __tramp::__variant_t<__unit_t>;
+        __variant_t __vars[] = {__variant_t{__no_init}, __variant_t{__no_init}};
+        int         __current = 0;
+        int         __next    = 1;
+
+        bool __keep_going = [&]() noexcept {
+          __unit_t __unit(static_cast<_Fn&&>(__fn)(static_cast<_As&&>(__as)...));
+          return __advance(__unit, __vars[__current]);
+        }();
+
+        for (; __keep_going;)
+        {
+          __keep_going = __visit(__step<__variant_t>{__vars[__next]}, __vars[__current]);
+          __vars[__current].template emplace<__done>();
+          __current = 1 - __current;
+          __next    = 1 - __next;
+        }
+      }
+    }
   }  // namespace __tramp
 
   template <class _Ty>
@@ -272,9 +306,7 @@ namespace STDEXEC
     }
     else
     {
-      __call_result_t<_Fun, _As...> __first(
-        static_cast<_Fun&&>(__fun)(static_cast<_As&&>(__as)...));
-      __tramp::__run(__first);
+      __tramp::__run_from(static_cast<_Fun&&>(__fun), static_cast<_As&&>(__as)...);
     }
   }
 

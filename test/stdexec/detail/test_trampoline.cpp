@@ -112,6 +112,51 @@ namespace
     }
   };
 
+  struct observes_first_destroyed
+  {
+    bool* first_destroyed_;
+    bool* observed_;
+
+    void operator()() && noexcept
+    {
+      *observed_ = *first_destroyed_;
+    }
+  };
+
+  struct first_with_observed_lifetime
+  {
+    bool* first_destroyed_;
+    bool* observed_;
+
+    first_with_observed_lifetime(bool* first_destroyed, bool* observed) noexcept
+      : first_destroyed_(first_destroyed)
+      , observed_(observed)
+    {}
+
+    first_with_observed_lifetime(first_with_observed_lifetime&& __other) noexcept
+      : first_destroyed_(__other.first_destroyed_)
+      , observed_(__other.observed_)
+    {}
+
+    ~first_with_observed_lifetime()
+    {
+      *first_destroyed_ = true;
+    }
+
+    observes_first_destroyed operator()() && noexcept
+    {
+      return observes_first_destroyed{first_destroyed_, observed_};
+    }
+  };
+
+  struct make_first_with_observed_lifetime
+  {
+    first_with_observed_lifetime operator()(bool* first_destroyed, bool* observed) && noexcept
+    {
+      return first_with_observed_lifetime{first_destroyed, observed};
+    }
+  };
+
   template <class _Fun>
   concept can_call_trampoline = requires(_Fun __fun, int* __log) {
     STDEXEC::__trampoline(static_cast<_Fun&&>(__fun), __log);
@@ -164,6 +209,18 @@ namespace
     STDEXEC::__trampoline(make_loop{}, &remaining, &count);
 
     CHECK(count == 5);
+  }
+
+  TEST_CASE("trampoline destroys the initial unit before invoking the next unit",
+            "[detail][trampoline]")
+  {
+    bool first_destroyed = false;
+    bool observed        = false;
+
+    STDEXEC::__trampoline(make_first_with_observed_lifetime{}, &first_destroyed, &observed);
+
+    CHECK(first_destroyed);
+    CHECK(observed);
   }
 
   TEST_CASE("deferred trampoline invokes a void-returning callable on destruction",
