@@ -35,36 +35,70 @@ namespace STDEXEC
     {};
 
     template <class _Ty>
-    using __next_t = __call_result_t<_Ty>;
+    concept __callable_unit = __nothrow_callable<_Ty>;
 
-    template <class _Ty, class _Seen, bool = __nothrow_callable<_Ty>>
-    struct __trampolinable_impl : std::false_type
+    template <class _Ty>
+    concept __optional_unit =
+      !__callable_unit<_Ty>
+      && requires(_Ty&& __unit) {
+           { static_cast<bool>(__unit) } noexcept -> __same_as<bool>;
+           { *static_cast<_Ty&&>(__unit) } noexcept;
+         }
+      && __nothrow_callable<decltype(*__declval<_Ty>())>;
+
+    template <class _Ty>
+    concept __unit = __callable_unit<_Ty> || __optional_unit<_Ty>;
+
+    template <class _Ty, bool = __callable_unit<_Ty>>
+    struct __unit_result;
+
+    template <class _Ty>
+    struct __unit_result<_Ty, true>
+    {
+      using __t = __call_result_t<_Ty>;
+    };
+
+    template <class _Ty>
+    struct __unit_result<_Ty, false>
+    {
+      using __t = __call_result_t<decltype(*__declval<_Ty>())>;
+    };
+
+    template <class _Ty>
+    using __unit_result_t = typename __unit_result<_Ty>::__t;
+
+    template <class _Ty, class _Seen, bool = __unit<_Ty>>
+    struct __trampoline_unit_impl : std::false_type
     {};
 
     template <bool _IsVoid, bool _IsCycle, class _Next, class _Ty, class _Seen>
-    struct __trampolinable_next : std::false_type
+    struct __trampoline_unit_next : std::false_type
     {};
 
     template <bool _IsCycle, class _Next, class _Ty, class _Seen>
-    struct __trampolinable_next<true, _IsCycle, _Next, _Ty, _Seen> : std::true_type
+    struct __trampoline_unit_next<true, _IsCycle, _Next, _Ty, _Seen> : std::true_type
     {};
 
     template <class _Next, class _Ty, class... _Seen>
-    struct __trampolinable_next<false, false, _Next, _Ty, __types<_Seen...>>
-      : __trampolinable_impl<_Next, __types<_Seen..., _Ty>>
+    struct __trampoline_unit_next<false, true, _Next, _Ty, __types<_Seen...>> : std::true_type
+    {};
+
+    template <class _Next, class _Ty, class... _Seen>
+    struct __trampoline_unit_next<false, false, _Next, _Ty, __types<_Seen...>>
+      : __trampoline_unit_impl<_Next, __types<_Seen..., _Ty>>
     {};
 
     template <class _Ty, class... _Seen>
-    struct __trampolinable_impl<_Ty, __types<_Seen...>, true>
-      : __trampolinable_next<std::is_void_v<__next_t<_Ty>>,
-                             __one_of<__next_t<_Ty>, _Seen..., _Ty>,
-                             __next_t<_Ty>,
-                             _Ty,
-                             __types<_Seen...>>
+    struct __trampoline_unit_impl<_Ty, __types<_Seen...>, true>
+      : __trampoline_unit_next<std::is_void_v<__unit_result_t<_Ty>>,
+                               __one_of<__unit_result_t<_Ty>, _Seen..., _Ty>,
+                               __unit_result_t<_Ty>,
+                               _Ty,
+                               __types<_Seen...>>
     {};
 
     template <class _Ty>
-    concept __trampolinable = __trampolinable_impl<_Ty, __types<>>::value;
+    concept __trampoline_unit = __trampoline_unit_impl<_Ty, __types<>>::value;
 
     template <class _Ty, class _Seen>
     struct __chain;
@@ -91,7 +125,7 @@ namespace STDEXEC
     template <class _Next, class _Ty, class... _Seen>
     struct __chain_result<false, true, _Next, _Ty, __types<_Seen...>>
     {
-      static_assert(__trampolinable<_Next>);
+      static_assert(__trampoline_unit<_Next>);
 
       using __t = typename __prepend<_Next,
                                      typename __chain<_Next, __types<_Seen..., _Ty>>::__t>::__t;
@@ -106,7 +140,7 @@ namespace STDEXEC
     template <class _Ty, class... _Seen>
     struct __chain<_Ty, __types<_Seen...>>
     {
-      using __next = __next_t<_Ty>;
+      using __next = __unit_result_t<_Ty>;
       using __t = typename __chain_result<std::is_void_v<__next>,
                                           !__one_of<__next, _Seen..., _Ty>,
                                           __next,
@@ -129,6 +163,10 @@ namespace STDEXEC
     template <class _Ty>
     using __variant_t = typename __as_variant<__continuations_t<_Ty>>::__t;
 
+    template <class _Unit, class _Variant>
+      requires __trampoline_unit<_Unit>
+    constexpr auto __advance(_Unit& __unit, _Variant& __out) noexcept -> bool;
+
     template <class _Variant>
     struct __step
     {
@@ -139,31 +177,61 @@ namespace STDEXEC
         return false;
       }
 
-      template <class _Fun>
-        requires __trampolinable<_Fun>
-      constexpr auto operator()(_Fun& __fun) const noexcept -> bool
+      template <class _Unit>
+        requires __trampoline_unit<_Unit>
+      constexpr auto operator()(_Unit& __unit) const noexcept -> bool
       {
-        if constexpr (std::is_void_v<__next_t<_Fun>>)
-        {
-          static_cast<_Fun&&>(__fun)();
-          return false;
-        }
-        else
-        {
-          __out_.__emplace_from([&]() noexcept -> __next_t<_Fun> {
-            return static_cast<_Fun&&>(__fun)();
-          });
-          return true;
-        }
+        return __advance(__unit, __out_);
       }
     };
 
-    template <__trampolinable _Ty>
-    constexpr void __run(_Ty& __fun) noexcept
+    template <class _Unit, class _Variant>
+      requires __trampoline_unit<_Unit>
+    constexpr auto __advance(_Unit& __unit, _Variant& __out) noexcept -> bool
     {
-      if constexpr (std::is_void_v<__next_t<_Ty>>)
+      if constexpr (__optional_unit<_Unit>)
       {
-        static_cast<_Ty&&>(__fun)();
+        if (!static_cast<bool>(__unit))
+        {
+          return false;
+        }
+      }
+
+      if constexpr (std::is_void_v<__unit_result_t<_Unit>>)
+      {
+        if constexpr (__callable_unit<_Unit>)
+        {
+          static_cast<_Unit&&>(__unit)();
+        }
+        else
+        {
+          (*static_cast<_Unit&&>(__unit))();
+        }
+        return false;
+      }
+      else
+      {
+        __out.__emplace_from([&]() noexcept -> __unit_result_t<_Unit> {
+          if constexpr (__callable_unit<_Unit>)
+          {
+            return static_cast<_Unit&&>(__unit)();
+          }
+          else
+          {
+            return (*static_cast<_Unit&&>(__unit))();
+          }
+        });
+        return true;
+      }
+    }
+
+    template <__trampoline_unit _Ty>
+    constexpr void __run(_Ty& __unit) noexcept
+    {
+      if constexpr (std::is_void_v<__unit_result_t<_Ty>>)
+      {
+        __done __out;
+        (void) __advance(__unit, __out);
       }
       else
       {
@@ -172,11 +240,7 @@ namespace STDEXEC
         int         __current = 0;
         int         __next    = 1;
 
-        __vars[__current].__emplace_from([&]() noexcept -> __next_t<_Ty> {
-          return static_cast<_Ty&&>(__fun)();
-        });
-
-        for (bool __keep_going = true; __keep_going;)
+        for (bool __keep_going = __advance(__unit, __vars[__current]); __keep_going;)
         {
           __keep_going = __visit(__step<__variant_t>{__vars[__next]}, __vars[__current]);
           __vars[__current].template emplace<__done>();
@@ -188,12 +252,15 @@ namespace STDEXEC
   }  // namespace __tramp
 
   template <class _Ty>
-  concept __trampolinable = __tramp::__trampolinable<_Ty>;
+  concept __trampoline_unit = __tramp::__trampoline_unit<_Ty>;
+
+  template <class _Ty>
+  concept __trampolinable = __trampoline_unit<_Ty>;
 
   template <class _Fun, class... _As>
   concept __trampoline_invocable = __nothrow_callable<_Fun, _As...>
                                 && (std::is_void_v<__call_result_t<_Fun, _As...>>
-                                    || __trampolinable<__call_result_t<_Fun, _As...>>);
+                                    || __trampoline_unit<__call_result_t<_Fun, _As...>>);
 
   template <class _Fun, class... _As>
     requires __trampoline_invocable<_Fun, _As...>
@@ -211,7 +278,7 @@ namespace STDEXEC
     }
   }
 
-  template <__trampolinable _Ty>
+  template <__trampoline_unit _Ty>
   struct __deferred_trampoline
   {
     template <class _Fun, class... _As>
@@ -236,7 +303,7 @@ namespace STDEXEC
 
   template <class _Fun, class... _As>
     requires __nothrow_callable<_Fun, _As...>
-          && __trampolinable<__call_result_t<_Fun, _As...>>
+          && __trampoline_unit<__call_result_t<_Fun, _As...>>
   STDEXEC_HOST_DEVICE_DEDUCTION_GUIDE __deferred_trampoline(_Fun&&, _As&&...)
     -> __deferred_trampoline<__call_result_t<_Fun, _As...>>;
 }  // namespace STDEXEC

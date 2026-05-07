@@ -18,6 +18,7 @@
 
 #include <catch2/catch_all.hpp>
 
+#include <optional>
 #include <type_traits>
 
 namespace
@@ -87,6 +88,30 @@ namespace
     cycle operator()(int*) && noexcept;
   };
 
+  struct loop_step
+  {
+    int* remaining_;
+    int* count_;
+
+    std::optional<loop_step> operator()() && noexcept
+    {
+      ++*count_;
+      if (--*remaining_ == 0)
+      {
+        return std::nullopt;
+      }
+      return loop_step{remaining_, count_};
+    }
+  };
+
+  struct make_loop
+  {
+    loop_step operator()(int* remaining, int* count) && noexcept
+    {
+      return loop_step{remaining, count};
+    }
+  };
+
   template <class _Fun>
   concept can_call_trampoline = requires(_Fun __fun, int* __log) {
     STDEXEC::__trampoline(static_cast<_Fun&&>(__fun), __log);
@@ -107,9 +132,10 @@ namespace
   static_assert(!can_call_trampoline<throwing_factory>);
   static_assert(can_make_deferred_trampoline<make_terminal>);
   static_assert(!can_make_deferred_trampoline<throwing_factory>);
-  static_assert(!STDEXEC::__trampolinable<cycle>);
-  static_assert(!can_call_trampoline<make_cycle>);
-  static_assert(!can_make_deferred_trampoline<make_cycle>);
+  static_assert(STDEXEC::__trampoline_unit<cycle>);
+  static_assert(can_call_trampoline<make_cycle>);
+  static_assert(can_make_deferred_trampoline<make_cycle>);
+  static_assert(STDEXEC::__trampoline_unit<std::optional<loop_step>>);
 
   TEST_CASE("trampoline invokes a void-returning callable immediately", "[detail][trampoline]")
   {
@@ -127,6 +153,17 @@ namespace
     STDEXEC::__trampoline(make_first{}, &log);
 
     CHECK(log == 1234);
+  }
+
+  TEST_CASE("trampoline iterates through optional-like returned invocables",
+            "[detail][trampoline]")
+  {
+    int remaining = 5;
+    int count     = 0;
+
+    STDEXEC::__trampoline(make_loop{}, &remaining, &count);
+
+    CHECK(count == 5);
   }
 
   TEST_CASE("deferred trampoline invokes a void-returning callable on destruction",
