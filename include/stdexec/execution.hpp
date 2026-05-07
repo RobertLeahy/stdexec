@@ -60,6 +60,7 @@
 #include "__detail/__task.hpp"
 #include "__detail/__task_scheduler.hpp"
 #include "__detail/__then.hpp"
+#include "__detail/__trampoline.hpp"
 #include "__detail/__transfer_just.hpp"
 #include "__detail/__transform_completion_signatures.hpp"
 #include "__detail/__transform_sender.hpp"
