@@ -21,6 +21,7 @@
 #include "__diagnostics.hpp"
 #include "__env.hpp"
 #include "__tag_invoke.hpp"
+#include "__trampoline.hpp"
 
 #include "../functional.hpp"
 
@@ -52,29 +53,61 @@ namespace STDEXEC
     static_cast<_Receiver &&>(__rcvr).set_value(static_cast<_As &&>(__args)...);
   };
 
-  struct set_value_t : __detail::__completion_tag<__disposition::__value>
+  template <class _Receiver, class... _As>
+  using __set_value_result_t = decltype(__declval<_Receiver>().set_value(__declval<_As>()...));
+
+  struct set_value_or_defer_t : __detail::__completion_tag<__disposition::__value>
   {
     template <class _Fn, class... _As>
     using __f = __minvoke<_Fn, _As...>;
 
     template <class _Receiver, class... _As>
       requires __set_value_member<_Receiver, _As...>
+            && __same_as<__set_value_result_t<_Receiver, _As...>, void>
     STDEXEC_ATTRIBUTE(host, device, always_inline)
     constexpr void operator()(_Receiver &&__rcvr, _As &&...__as) const noexcept
     {
       static_assert(noexcept(
                       static_cast<_Receiver &&>(__rcvr).set_value(static_cast<_As &&>(__as)...)),
                     "set_value member functions must be noexcept");
-      static_assert(__same_as<decltype(static_cast<_Receiver &&>(__rcvr).set_value(
-                                static_cast<_As &&>(__as)...)),
-                              void>,
-                    "set_value member functions must return void");
       static_cast<_Receiver &&>(__rcvr).set_value(static_cast<_As &&>(__as)...);
     }
 
     template <class _Receiver, class... _As>
       requires __set_value_member<_Receiver, _As...>
-            || __tag_invocable<set_value_t, _Receiver, _As...>
+            && __trampoline_unit<__set_value_result_t<_Receiver, _As...>>
+    [[nodiscard]]
+    STDEXEC_ATTRIBUTE(host, device, always_inline)
+    constexpr auto operator()(_Receiver &&__rcvr, _As &&...__as) const noexcept
+      -> __set_value_result_t<_Receiver, _As...>
+    {
+      static_assert(noexcept(
+                      static_cast<_Receiver &&>(__rcvr).set_value(static_cast<_As &&>(__as)...)),
+                    "set_value member functions must be noexcept");
+      return static_cast<_Receiver &&>(__rcvr).set_value(static_cast<_As &&>(__as)...);
+    }
+  };
+
+  inline constexpr set_value_or_defer_t set_value_or_defer{};
+
+  struct set_value_t : __detail::__completion_tag<__disposition::__value>
+  {
+    template <class _Fn, class... _As>
+    using __f = __minvoke<_Fn, _As...>;
+
+    template <class _Receiver, class... _As>
+      requires __callable<set_value_or_defer_t, _Receiver, _As...>
+    STDEXEC_ATTRIBUTE(host, device, always_inline)
+    constexpr void operator()(_Receiver &&__rcvr, _As &&...__as) const noexcept
+    {
+      STDEXEC::__trampoline(STDEXEC::set_value_or_defer,
+                            static_cast<_Receiver &&>(__rcvr),
+                            static_cast<_As &&>(__as)...);
+    }
+
+    template <class _Receiver, class... _As>
+      requires (!__callable<set_value_or_defer_t, _Receiver, _As...>)
+            && __tag_invocable<set_value_t, _Receiver, _As...>
     [[deprecated("the use of tag_invoke for set_value is deprecated")]]
     STDEXEC_ATTRIBUTE(host, device, always_inline)  //
       constexpr void operator()(_Receiver &&__rcvr, _As &&...__as) const noexcept
@@ -89,7 +122,10 @@ namespace STDEXEC
     static_cast<_Receiver &&>(__rcvr).set_error(static_cast<_Error &&>(__err));
   };
 
-  struct set_error_t : __detail::__completion_tag<__disposition::__error>
+  template <class _Receiver, class _Error>
+  using __set_error_result_t = decltype(__declval<_Receiver>().set_error(__declval<_Error>()));
+
+  struct set_error_or_defer_t : __detail::__completion_tag<__disposition::__error>
   {
     template <class _Fn, class... _Args>
       requires(sizeof...(_Args) == 1)
@@ -97,22 +133,52 @@ namespace STDEXEC
 
     template <class _Receiver, class _Error>
       requires __set_error_member<_Receiver, _Error>
+            && __same_as<__set_error_result_t<_Receiver, _Error>, void>
     STDEXEC_ATTRIBUTE(host, device, always_inline)
     constexpr void operator()(_Receiver &&__rcvr, _Error &&__err) const noexcept
     {
       static_assert(noexcept(
                       static_cast<_Receiver &&>(__rcvr).set_error(static_cast<_Error &&>(__err))),
                     "set_error member functions must be noexcept");
-      static_assert(__same_as<decltype(static_cast<_Receiver &&>(__rcvr).set_error(
-                                static_cast<_Error &&>(__err))),
-                              void>,
-                    "set_error member functions must return void");
       static_cast<_Receiver &&>(__rcvr).set_error(static_cast<_Error &&>(__err));
     }
 
     template <class _Receiver, class _Error>
       requires __set_error_member<_Receiver, _Error>
-            || __tag_invocable<set_error_t, _Receiver, _Error>
+            && __trampoline_unit<__set_error_result_t<_Receiver, _Error>>
+    [[nodiscard]]
+    STDEXEC_ATTRIBUTE(host, device, always_inline)
+    constexpr auto operator()(_Receiver &&__rcvr, _Error &&__err) const noexcept
+      -> __set_error_result_t<_Receiver, _Error>
+    {
+      static_assert(noexcept(
+                      static_cast<_Receiver &&>(__rcvr).set_error(static_cast<_Error &&>(__err))),
+                    "set_error member functions must be noexcept");
+      return static_cast<_Receiver &&>(__rcvr).set_error(static_cast<_Error &&>(__err));
+    }
+  };
+
+  inline constexpr set_error_or_defer_t set_error_or_defer{};
+
+  struct set_error_t : __detail::__completion_tag<__disposition::__error>
+  {
+    template <class _Fn, class... _Args>
+      requires(sizeof...(_Args) == 1)
+    using __f = __minvoke<_Fn, _Args...>;
+
+    template <class _Receiver, class _Error>
+      requires __callable<set_error_or_defer_t, _Receiver, _Error>
+    STDEXEC_ATTRIBUTE(host, device, always_inline)
+    constexpr void operator()(_Receiver &&__rcvr, _Error &&__err) const noexcept
+    {
+      STDEXEC::__trampoline(STDEXEC::set_error_or_defer,
+                            static_cast<_Receiver &&>(__rcvr),
+                            static_cast<_Error &&>(__err));
+    }
+
+    template <class _Receiver, class _Error>
+      requires (!__callable<set_error_or_defer_t, _Receiver, _Error>)
+            && __tag_invocable<set_error_t, _Receiver, _Error>
     [[deprecated("the use of tag_invoke for set_error is deprecated")]]
     STDEXEC_ATTRIBUTE(host, device, always_inline)  //
       constexpr void operator()(_Receiver &&__rcvr, _Error &&__err) const noexcept
@@ -127,7 +193,10 @@ namespace STDEXEC
     static_cast<_Receiver &&>(__rcvr).set_stopped();
   };
 
-  struct set_stopped_t : __detail::__completion_tag<__disposition::__stopped>
+  template <class _Receiver>
+  using __set_stopped_result_t = decltype(__declval<_Receiver>().set_stopped());
+
+  struct set_stopped_or_defer_t : __detail::__completion_tag<__disposition::__stopped>
   {
     template <class _Fn, class... _Args>
       requires(sizeof...(_Args) == 0)
@@ -135,18 +204,47 @@ namespace STDEXEC
 
     template <class _Receiver>
       requires __set_stopped_member<_Receiver>
+            && __same_as<__set_stopped_result_t<_Receiver>, void>
     STDEXEC_ATTRIBUTE(host, device, always_inline)
     constexpr void operator()(_Receiver &&__rcvr) const noexcept
     {
       static_assert(noexcept(static_cast<_Receiver &&>(__rcvr).set_stopped()),
                     "set_stopped member functions must be noexcept");
-      static_assert(__same_as<decltype(static_cast<_Receiver &&>(__rcvr).set_stopped()), void>,
-                    "set_stopped member functions must return void");
       static_cast<_Receiver &&>(__rcvr).set_stopped();
     }
 
     template <class _Receiver>
-      requires __set_stopped_member<_Receiver> || __tag_invocable<set_stopped_t, _Receiver>
+      requires __set_stopped_member<_Receiver>
+            && __trampoline_unit<__set_stopped_result_t<_Receiver>>
+    [[nodiscard]]
+    STDEXEC_ATTRIBUTE(host, device, always_inline)
+    constexpr auto operator()(_Receiver &&__rcvr) const noexcept -> __set_stopped_result_t<_Receiver>
+    {
+      static_assert(noexcept(static_cast<_Receiver &&>(__rcvr).set_stopped()),
+                    "set_stopped member functions must be noexcept");
+      return static_cast<_Receiver &&>(__rcvr).set_stopped();
+    }
+  };
+
+  inline constexpr set_stopped_or_defer_t set_stopped_or_defer{};
+
+  struct set_stopped_t : __detail::__completion_tag<__disposition::__stopped>
+  {
+    template <class _Fn, class... _Args>
+      requires(sizeof...(_Args) == 0)
+    using __f = __minvoke<_Fn, _Args...>;
+
+    template <class _Receiver>
+      requires __callable<set_stopped_or_defer_t, _Receiver>
+    STDEXEC_ATTRIBUTE(host, device, always_inline)
+    constexpr void operator()(_Receiver &&__rcvr) const noexcept
+    {
+      STDEXEC::__trampoline(STDEXEC::set_stopped_or_defer, static_cast<_Receiver &&>(__rcvr));
+    }
+
+    template <class _Receiver>
+      requires (!__callable<set_stopped_or_defer_t, _Receiver>)
+            && __tag_invocable<set_stopped_t, _Receiver>
     [[deprecated("the use of tag_invoke for set_stopped is deprecated")]]
     STDEXEC_ATTRIBUTE(host, device, always_inline)  //
       constexpr void operator()(_Receiver &&__rcvr) const noexcept
