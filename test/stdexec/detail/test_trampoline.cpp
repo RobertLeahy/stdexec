@@ -73,6 +73,14 @@ namespace
     }
   };
 
+  struct make_void
+  {
+    void operator()(int* log) && noexcept
+    {
+      *log = *log * 10 + 1;
+    }
+  };
+
   struct throwing_factory
   {
     terminal operator()(int*) &&;
@@ -174,6 +182,7 @@ namespace
   static_assert(!std::is_move_constructible_v<deferred_trampoline_t>);
   static_assert(!std::is_move_assignable_v<deferred_trampoline_t>);
   static_assert(can_call_trampoline<make_terminal>);
+  static_assert(can_call_trampoline<make_void>);
   static_assert(!can_call_trampoline<throwing_factory>);
   static_assert(can_make_deferred_trampoline<make_terminal>);
   static_assert(!can_make_deferred_trampoline<throwing_factory>);
@@ -183,6 +192,16 @@ namespace
   static_assert(STDEXEC::__trampoline_unit<std::optional<loop_step>>);
 
   TEST_CASE("trampoline invokes a void-returning callable immediately", "[detail][trampoline]")
+  {
+    int log = 0;
+
+    STDEXEC::__trampoline(make_void{}, &log);
+
+    CHECK(log == 1);
+  }
+
+  TEST_CASE("trampoline invokes a void-returning trampoline unit immediately",
+            "[detail][trampoline]")
   {
     int log = 0;
 
