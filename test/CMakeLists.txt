@@ -77,6 +77,7 @@ set(stdexec_test_sources
     stdexec/detail/test_demangle.cpp
     stdexec/detail/test_utility.cpp
     stdexec/detail/test_intrusive_mpsc_queue.cpp
+    stdexec/detail/test_trampoline.cpp
     stdexec/schedulers/test_task_scheduler.cpp
     stdexec/schedulers/test_parallel_scheduler.cpp
     stdexec/queries/test_env.cpp
