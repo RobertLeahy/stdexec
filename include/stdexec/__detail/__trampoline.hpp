@@ -35,6 +35,17 @@ namespace STDEXEC
     {};
 
     template <class _Ty>
+    struct __is_variant : std::false_type
+    {};
+
+    template <class... _Ts>
+    struct __is_variant<__variant<_Ts...>> : std::true_type
+    {};
+
+    template <class _Ty>
+    concept __variant_unit = __is_variant<__decay_t<_Ty>>::value;
+
+    template <class _Ty>
     concept __callable_unit = __nothrow_callable<_Ty>;
 
     template <class _Ty>
@@ -47,7 +58,7 @@ namespace STDEXEC
       && __nothrow_callable<decltype(*__declval<_Ty>())>;
 
     template <class _Ty>
-    concept __unit = __callable_unit<_Ty> || __optional_unit<_Ty>;
+    concept __unit = __callable_unit<_Ty> || __optional_unit<_Ty> || __variant_unit<_Ty>;
 
     template <class _Ty, bool = __callable_unit<_Ty>>
     struct __unit_result;
@@ -69,6 +80,15 @@ namespace STDEXEC
 
     template <class _Ty, class _Seen, bool = __unit<_Ty>>
     struct __trampoline_unit_impl : std::false_type
+    {};
+
+    template <class _Ty, class _Seen>
+    struct __trampoline_variant_impl : std::false_type
+    {};
+
+    template <class... _Ts, class _Seen>
+    struct __trampoline_variant_impl<__variant<_Ts...>, _Seen>
+      : std::bool_constant<(__trampoline_unit_impl<_Ts, _Seen>::value && ...)>
     {};
 
     template <bool _IsVoid, bool _IsCycle, class _Next, class _Ty, class _Seen>
@@ -97,11 +117,46 @@ namespace STDEXEC
                                __types<_Seen...>>
     {};
 
+    template <class _Ty, class... _Seen>
+      requires __variant_unit<_Ty>
+    struct __trampoline_unit_impl<_Ty, __types<_Seen...>, true>
+      : __trampoline_variant_impl<__decay_t<_Ty>, __types<_Seen...>>
+    {};
+
     template <class _Ty>
     concept __trampoline_unit = __trampoline_unit_impl<_Ty, __types<>>::value;
 
     template <class _Ty, class _Seen>
     struct __chain;
+
+    template <class... _Ts>
+    struct __concat_types;
+
+    template <>
+    struct __concat_types<>
+    {
+      using __t = __types<>;
+    };
+
+    template <class... _Ts>
+    struct __concat_types<__types<_Ts...>>
+    {
+      using __t = __types<_Ts...>;
+    };
+
+    template <class... _Ts, class... _Us, class... _Rest>
+    struct __concat_types<__types<_Ts...>, __types<_Us...>, _Rest...>
+      : __concat_types<__types<_Ts..., _Us...>, _Rest...>
+    {};
+
+    template <class _Ty, class _Seen>
+    struct __variant_chain;
+
+    template <class... _Ts, class _Seen>
+    struct __variant_chain<__variant<_Ts...>, _Seen>
+    {
+      using __t = typename __concat_types<typename __chain<_Ts, _Seen>::__t...>::__t;
+    };
 
     template <class... _Ts>
     struct __prepend
@@ -148,6 +203,13 @@ namespace STDEXEC
                                           __types<_Seen...>>::__t;
     };
 
+    template <class _Ty, class... _Seen>
+      requires __variant_unit<_Ty>
+    struct __chain<_Ty, __types<_Seen...>>
+    {
+      using __t = typename __variant_chain<__decay_t<_Ty>, __types<_Seen...>>::__t;
+    };
+
     template <class _Ty>
     using __continuations_t = typename __chain<_Ty, __types<>>::__t;
 
@@ -189,64 +251,65 @@ namespace STDEXEC
       requires __trampoline_unit<_Unit>
     constexpr auto __advance(_Unit& __unit, _Variant& __out) noexcept -> bool
     {
-      if constexpr (__optional_unit<_Unit>)
+      if constexpr (__variant_unit<_Unit>)
+      {
+        if (__unit.__is_valueless())
+        {
+          return false;
+        }
+        return __visit(__step<_Variant>{__out}, __unit);
+      }
+      else if constexpr (__optional_unit<_Unit>)
       {
         if (!static_cast<bool>(__unit))
         {
           return false;
         }
-      }
 
-      if constexpr (std::is_void_v<__unit_result_t<_Unit>>)
-      {
-        if constexpr (__callable_unit<_Unit>)
+        if constexpr (std::is_void_v<__unit_result_t<_Unit>>)
         {
-          static_cast<_Unit&&>(__unit)();
+          (*static_cast<_Unit&&>(__unit))();
+          return false;
         }
         else
         {
-          (*static_cast<_Unit&&>(__unit))();
+          __out.__emplace_from([&]() noexcept -> __unit_result_t<_Unit> {
+            return (*static_cast<_Unit&&>(__unit))();
+          });
+          return true;
         }
-        return false;
       }
       else
       {
-        __out.__emplace_from([&]() noexcept -> __unit_result_t<_Unit> {
-          if constexpr (__callable_unit<_Unit>)
-          {
+        if constexpr (std::is_void_v<__unit_result_t<_Unit>>)
+        {
+          static_cast<_Unit&&>(__unit)();
+          return false;
+        }
+        else
+        {
+          __out.__emplace_from([&]() noexcept -> __unit_result_t<_Unit> {
             return static_cast<_Unit&&>(__unit)();
-          }
-          else
-          {
-            return (*static_cast<_Unit&&>(__unit))();
-          }
-        });
-        return true;
+          });
+          return true;
+        }
       }
     }
 
     template <__trampoline_unit _Ty>
     constexpr void __run(_Ty& __unit) noexcept
     {
-      if constexpr (std::is_void_v<__unit_result_t<_Ty>>)
-      {
-        __done __out;
-        (void) __advance(__unit, __out);
-      }
-      else
-      {
-        using __variant_t = __tramp::__variant_t<_Ty>;
-        __variant_t __vars[] = {__variant_t{__no_init}, __variant_t{__no_init}};
-        int         __current = 0;
-        int         __next    = 1;
+      using __variant_t = __tramp::__variant_t<_Ty>;
+      __variant_t __vars[] = {__variant_t{__no_init}, __variant_t{__no_init}};
+      int         __current = 0;
+      int         __next    = 1;
 
-        for (bool __keep_going = __advance(__unit, __vars[__current]); __keep_going;)
-        {
-          __keep_going = __visit(__step<__variant_t>{__vars[__next]}, __vars[__current]);
-          __vars[__current].template emplace<__done>();
-          __current = 1 - __current;
-          __next    = 1 - __next;
-        }
+      for (bool __keep_going = __advance(__unit, __vars[__current]); __keep_going;)
+      {
+        __keep_going = __visit(__step<__variant_t>{__vars[__next]}, __vars[__current]);
+        __vars[__current].template emplace<__done>();
+        __current = 1 - __current;
+        __next    = 1 - __next;
       }
     }
 
@@ -255,32 +318,22 @@ namespace STDEXEC
     constexpr void __run_from(_Fn&& __fn, _As&&... __as) noexcept
     {
       using __unit_t = __call_result_t<_Fn, _As...>;
+      using __variant_t = __tramp::__variant_t<__unit_t>;
+      __variant_t __vars[] = {__variant_t{__no_init}, __variant_t{__no_init}};
+      int         __current = 0;
+      int         __next    = 1;
 
-      if constexpr (std::is_void_v<__unit_result_t<__unit_t>>)
-      {
+      bool __keep_going = [&]() noexcept {
         __unit_t __unit(static_cast<_Fn&&>(__fn)(static_cast<_As&&>(__as)...));
-        __done   __out;
-        (void) __advance(__unit, __out);
-      }
-      else
+        return __advance(__unit, __vars[__current]);
+      }();
+
+      for (; __keep_going;)
       {
-        using __variant_t = __tramp::__variant_t<__unit_t>;
-        __variant_t __vars[] = {__variant_t{__no_init}, __variant_t{__no_init}};
-        int         __current = 0;
-        int         __next    = 1;
-
-        bool __keep_going = [&]() noexcept {
-          __unit_t __unit(static_cast<_Fn&&>(__fn)(static_cast<_As&&>(__as)...));
-          return __advance(__unit, __vars[__current]);
-        }();
-
-        for (; __keep_going;)
-        {
-          __keep_going = __visit(__step<__variant_t>{__vars[__next]}, __vars[__current]);
-          __vars[__current].template emplace<__done>();
-          __current = 1 - __current;
-          __next    = 1 - __next;
-        }
+        __keep_going = __visit(__step<__variant_t>{__vars[__next]}, __vars[__current]);
+        __vars[__current].template emplace<__done>();
+        __current = 1 - __current;
+        __next    = 1 - __next;
       }
     }
   }  // namespace __tramp

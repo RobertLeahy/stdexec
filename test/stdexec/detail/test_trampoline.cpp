@@ -73,6 +73,52 @@ namespace
     }
   };
 
+  struct make_variant
+  {
+    STDEXEC::__variant<first, terminal> operator()(int* log, bool first_path) && noexcept
+    {
+      STDEXEC::__variant<first, terminal> variant{STDEXEC::__no_init};
+      if (first_path)
+      {
+        variant.template emplace<first>(log);
+      }
+      else
+      {
+        variant.template emplace<terminal>(log);
+      }
+      *log = *log * 10 + 1;
+      return variant;
+    }
+  };
+
+  struct make_nested_variant
+  {
+    STDEXEC::__variant<STDEXEC::__variant<first, terminal>, second>
+      operator()(int* log, int path) && noexcept
+    {
+      STDEXEC::__variant<STDEXEC::__variant<first, terminal>, second> outer{STDEXEC::__no_init};
+      if (path == 0)
+      {
+        outer.template emplace<second>(log);
+      }
+      else
+      {
+        auto& inner =
+          outer.template emplace<STDEXEC::__variant<first, terminal>>(STDEXEC::__no_init);
+        if (path == 1)
+        {
+          inner.template emplace<first>(log);
+        }
+        else
+        {
+          inner.template emplace<terminal>(log);
+        }
+      }
+      *log = *log * 10 + 1;
+      return outer;
+    }
+  };
+
   struct make_void
   {
     void operator()(int* log) && noexcept
@@ -170,6 +216,11 @@ namespace
     STDEXEC::__trampoline(static_cast<_Fun&&>(__fun), __log);
   };
 
+  template <class _Fun, class... _As>
+  concept can_call_trampoline_with = requires(_Fun __fun, _As... __as) {
+    STDEXEC::__trampoline(static_cast<_Fun&&>(__fun), static_cast<_As&&>(__as)...);
+  };
+
   template <class _Fun>
   concept can_make_deferred_trampoline = requires(_Fun __fun, int* __log) {
     STDEXEC::__deferred_trampoline{static_cast<_Fun&&>(__fun), __log};
@@ -183,10 +234,14 @@ namespace
   static_assert(!std::is_move_assignable_v<deferred_trampoline_t>);
   static_assert(can_call_trampoline<make_terminal>);
   static_assert(can_call_trampoline<make_void>);
+  static_assert(can_call_trampoline_with<make_variant, int*, bool>);
+  static_assert(can_call_trampoline_with<make_nested_variant, int*, int>);
   static_assert(!can_call_trampoline<throwing_factory>);
   static_assert(can_make_deferred_trampoline<make_terminal>);
   static_assert(!can_make_deferred_trampoline<throwing_factory>);
   static_assert(STDEXEC::__trampoline_unit<cycle>);
+  static_assert(STDEXEC::__trampoline_unit<STDEXEC::__variant<first, terminal>>);
+  static_assert(!STDEXEC::__trampoline_unit<STDEXEC::__variant<first, throwing_factory>>);
   static_assert(can_call_trampoline<make_cycle>);
   static_assert(can_make_deferred_trampoline<make_cycle>);
   static_assert(STDEXEC::__trampoline_unit<std::optional<loop_step>>);
@@ -217,6 +272,34 @@ namespace
     STDEXEC::__trampoline(make_first{}, &log);
 
     CHECK(log == 1234);
+  }
+
+  TEST_CASE("trampoline iterates through the active variant alternative",
+            "[detail][trampoline]")
+  {
+    int first_path_log = 0;
+    int final_path_log = 0;
+
+    STDEXEC::__trampoline(make_variant{}, &first_path_log, true);
+    STDEXEC::__trampoline(make_variant{}, &final_path_log, false);
+
+    CHECK(first_path_log == 1234);
+    CHECK(final_path_log == 14);
+  }
+
+  TEST_CASE("trampoline flattens nested variant alternatives", "[detail][trampoline]")
+  {
+    int second_path_log = 0;
+    int first_path_log  = 0;
+    int final_path_log  = 0;
+
+    STDEXEC::__trampoline(make_nested_variant{}, &second_path_log, 0);
+    STDEXEC::__trampoline(make_nested_variant{}, &first_path_log, 1);
+    STDEXEC::__trampoline(make_nested_variant{}, &final_path_log, 2);
+
+    CHECK(second_path_log == 134);
+    CHECK(first_path_log == 1234);
+    CHECK(final_path_log == 14);
   }
 
   TEST_CASE("trampoline iterates through optional-like returned invocables",
