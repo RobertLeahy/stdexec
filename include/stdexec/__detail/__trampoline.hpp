@@ -178,7 +178,13 @@ namespace STDEXEC
       __variant __v;
       template<typename... _Us>
       constexpr bool __handle(std::variant<_Us...>&& __v) noexcept {
-        //  TODO
+        std::visit(
+          [&](auto&& f) noexcept {
+            this->__v.template emplace<
+              std::remove_cvref_t<decltype(f)>>(
+                static_cast<decltype(f)&&>(f));
+          },
+          std::move(__v));
         return false;
       }
       template<typename _U>

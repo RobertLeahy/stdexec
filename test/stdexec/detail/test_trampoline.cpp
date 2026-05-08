@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <optional>
 #include <type_traits>
+#include <variant>
 
 namespace
 {
@@ -502,5 +503,40 @@ namespace
     });
     CHECK(inner_invoked == 3);
     CHECK(invoked);
+  }
+
+  TEST_CASE("Variant trampolining works",
+            "[detail][trampoline]")
+  {
+    bool a_invoked = false;
+    auto a = [&]() noexcept {
+      CHECK(!a_invoked);
+      a_invoked = true;
+    };
+    bool b_invoked = false;
+    auto b = [&]() noexcept {
+      CHECK(!b_invoked);
+      b_invoked = true;
+    };
+    std::size_t invoked = 0;
+    const auto f = [&]() noexcept {
+      using type = std::variant<
+        decltype(a),
+        decltype(b)>;
+      if (invoked) {
+        ++invoked;
+        return type(b);
+      }
+      ++invoked;
+      return type(a);
+    };
+    __trampoline(f);
+    CHECK(invoked == 1);
+    CHECK(a_invoked);
+    CHECK(!b_invoked);
+    __trampoline(f);
+    CHECK(invoked == 2);
+    CHECK(a_invoked);
+    CHECK(b_invoked);
   }
 }  // namespace
