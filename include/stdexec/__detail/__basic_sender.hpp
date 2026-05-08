@@ -193,9 +193,21 @@ namespace STDEXEC
 
       static constexpr auto __start =  //
         []<class... _ChildOps>(__ignore, _ChildOps&... __ops) noexcept
+      -> decltype(auto)
       {
         static_assert(sizeof...(_ChildOps) > 0);
-        (STDEXEC::start(__ops), ...);
+        if constexpr (sizeof...(_ChildOps) == 1)
+        {
+          return (STDEXEC::start_or_defer(__ops), ...);
+        }
+        else if constexpr ((!start_defers_v<_ChildOps> && ...))
+        {
+          (STDEXEC::start_or_defer(__ops), ...);
+        }
+        else
+        {
+          (STDEXEC::start(__ops), ...);
+        }
       };
 
       static constexpr auto __complete =  //
