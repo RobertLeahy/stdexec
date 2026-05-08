@@ -200,9 +200,7 @@ namespace STDEXEC
         __v.template emplace<std::remove_cvref_t<_U>>(static_cast<_U&&>(__f));
         return false;
       }
-    public:
-      constexpr explicit __impl(_T __t) noexcept : __v(std::move(__t)) {}
-      constexpr bool operator()() & noexcept {
+      constexpr bool __step() noexcept {
         return std::visit(
           [&](auto& __f) noexcept {
             if constexpr (
@@ -218,6 +216,11 @@ namespace STDEXEC
           },
           __v);
       }
+    public:
+      constexpr explicit __impl(_T __t) noexcept : __v(std::move(__t)) {}
+      constexpr void operator()() && noexcept {
+        while (!__step());
+      }
     };
 
   }  // namespace __tramp
@@ -229,11 +232,22 @@ namespace STDEXEC
   
   template<__trampolinable _T>
   constexpr void __trampoline(_T __t) noexcept {
-    if constexpr (std::is_same_v<std::invoke_result_t<_T>, void>) {
-      static_cast<_T&&>(__t)();
+    if constexpr (requires { *std::move(__t); }) {
+      if (__t) {
+        __tramp::__impl(*std::move(__t))();
+      }
+    } else if constexpr (std::is_invocable_v<_T>) {
+      if constexpr (std::is_same_v<std::invoke_result_t<_T>, void>) {
+        std::move(__t)();
+      } else {
+        __tramp::__impl(std::move(__t))();
+      }
     } else {
-      __tramp::__impl __impl(std::move(__t));
-      while (!__impl());
+      std::visit(
+        [&](auto&& __f) noexcept {
+          __tramp::__impl(std::forward<decltype(__f)>(__f))();
+        },
+        std::move(__t));
     }
   }
 
