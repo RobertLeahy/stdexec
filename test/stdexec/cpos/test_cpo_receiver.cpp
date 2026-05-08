@@ -109,6 +109,40 @@ namespace
     }
   };
 
+  struct continuation
+  {
+    int* target_;
+    int  value_;
+
+    void operator()() && noexcept
+    {
+      *target_ = value_;
+    }
+  };
+
+  struct recv_deferred
+  {
+    int* target_;
+
+    continuation set_value(int val) noexcept
+    {
+      *target_ = 1;
+      return continuation{target_, val};
+    }
+
+    continuation set_error(int ec) noexcept
+    {
+      *target_ = 2;
+      return continuation{target_, -ec};
+    }
+
+    continuation set_stopped() noexcept
+    {
+      *target_ = 3;
+      return continuation{target_, INT_MAX};
+    }
+  };
+
   TEST_CASE("can call set_value on a void receiver", "[cpo][cpo_receiver]")
   {
     ex::set_value(expect_void_receiver{});
@@ -257,6 +291,69 @@ namespace
     REQUIRE(val == INT_MAX);
   }
 
+  TEST_CASE("set_value_or_defer returns a trampoline continuation", "[cpo][cpo_receiver]")
+  {
+    static_assert(std::is_same_v<ex::set_value_result_t<recv_value, int>, void>);
+    static_assert(!ex::set_value_defers_v<recv_value, int>);
+    static_assert(std::is_same_v<ex::set_value_result_t<recv_deferred, int>, continuation>);
+    static_assert(ex::set_value_defers_v<recv_deferred, int>);
+
+    int val = 0;
+
+    auto next = ex::set_value_or_defer(recv_deferred{&val}, 10);
+
+    CHECK(val == 1);
+    ex::__trampoline(static_cast<continuation&&>(next));
+    CHECK(val == 10);
+  }
+
+  TEST_CASE("set_error_or_defer returns a trampoline continuation", "[cpo][cpo_receiver]")
+  {
+    static_assert(std::is_same_v<ex::set_error_result_t<recv_value, int>, void>);
+    static_assert(!ex::set_error_defers_v<recv_value, int>);
+    static_assert(std::is_same_v<ex::set_error_result_t<recv_deferred, int>, continuation>);
+    static_assert(ex::set_error_defers_v<recv_deferred, int>);
+
+    int val = 0;
+
+    auto next = ex::set_error_or_defer(recv_deferred{&val}, 10);
+
+    CHECK(val == 2);
+    ex::__trampoline(static_cast<continuation&&>(next));
+    CHECK(val == -10);
+  }
+
+  TEST_CASE("set_stopped_or_defer returns a trampoline continuation", "[cpo][cpo_receiver]")
+  {
+    static_assert(std::is_same_v<ex::set_stopped_result_t<recv_value>, void>);
+    static_assert(!ex::set_stopped_defers_v<recv_value>);
+    static_assert(std::is_same_v<ex::set_stopped_result_t<recv_deferred>, continuation>);
+    static_assert(ex::set_stopped_defers_v<recv_deferred>);
+
+    int val = 0;
+
+    auto next = ex::set_stopped_or_defer(recv_deferred{&val});
+
+    CHECK(val == 3);
+    ex::__trampoline(static_cast<continuation&&>(next));
+    CHECK(val == INT_MAX);
+  }
+
+  TEST_CASE("receiver CPOs trampoline returned continuations internally", "[cpo][cpo_receiver]")
+  {
+    int value = 0;
+    int error = 0;
+    int stop  = 0;
+
+    ex::set_value(recv_deferred{&value}, 10);
+    ex::set_error(recv_deferred{&error}, 10);
+    ex::set_stopped(recv_deferred{&stop});
+
+    CHECK(value == 10);
+    CHECK(error == -10);
+    CHECK(stop == INT_MAX);
+  }
+
   TEST_CASE("tag types can be deduced from set_value, set_error and set_stopped",
             "[cpo][cpo_receiver]")
   {
@@ -264,6 +361,13 @@ namespace
     static_assert(std::is_same_v<ex::set_error_t const, decltype(ex::set_error)>, "type mismatch");
     static_assert(std::is_same_v<ex::set_stopped_t const, decltype(ex::set_stopped)>,
                   "type mismatch");
+    static_assert(std::is_same_v<ex::set_value_or_defer_t const, decltype(ex::set_value_or_defer)>,
+                  "type mismatch");
+    static_assert(std::is_same_v<ex::set_error_or_defer_t const, decltype(ex::set_error_or_defer)>,
+                  "type mismatch");
+    static_assert(
+      std::is_same_v<ex::set_stopped_or_defer_t const, decltype(ex::set_stopped_or_defer)>,
+      "type mismatch");
   }
 }  // namespace
 

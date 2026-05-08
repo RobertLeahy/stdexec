@@ -71,10 +71,16 @@ namespace STDEXEC
   struct set_value_t;
   struct set_error_t;
   struct set_stopped_t;
+  struct set_value_or_defer_t;
+  struct set_error_or_defer_t;
+  struct set_stopped_or_defer_t;
 
   extern set_value_t const   set_value;
   extern set_error_t const   set_error;
   extern set_stopped_t const set_stopped;
+  extern set_value_or_defer_t const   set_value_or_defer;
+  extern set_error_or_defer_t const   set_error_or_defer;
+  extern set_stopped_or_defer_t const set_stopped_or_defer;
 
   enum class __disposition
   {
@@ -229,7 +235,9 @@ namespace STDEXEC
 
   //////////////////////////////////////////////////////////////////////////////////////////////////
   struct start_t;
+  struct start_or_defer_t;
   extern start_t const start;
+  extern start_or_defer_t const start_or_defer;
 
   //////////////////////////////////////////////////////////////////////////////////////////////////
   struct schedule_t;

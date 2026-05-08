@@ -67,6 +67,28 @@ namespace
     }
   };
 
+  struct continuation
+  {
+    bool* continued_;
+
+    void operator()() && noexcept
+    {
+      *continued_ = true;
+    }
+  };
+
+  struct op_deferred_start : immovable
+  {
+    bool* started_;
+    bool* continued_;
+
+    continuation start() & noexcept
+    {
+      *started_ = true;
+      return continuation{continued_};
+    }
+  };
+
   TEST_CASE("can call start on an operation state", "[cpo][cpo_start]")
   {
     my_oper op;
@@ -98,8 +120,43 @@ namespace
     REQUIRE(started);
   }
 
+  TEST_CASE("start_or_defer returns a trampoline continuation", "[cpo][cpo_start]")
+  {
+    static_assert(std::is_same_v<ex::start_result_t<op_ref>, void>);
+    static_assert(!ex::start_defers_v<op_ref>);
+    static_assert(std::is_same_v<ex::start_result_t<op_deferred_start>, continuation>);
+    static_assert(ex::start_defers_v<op_deferred_start>);
+
+    bool started   = false;
+    bool continued = false;
+    op_deferred_start op{{}, &started, &continued};
+
+    auto next = ex::start_or_defer(op);
+
+    CHECK(started);
+    CHECK_FALSE(continued);
+
+    ex::__trampoline(static_cast<continuation&&>(next));
+
+    CHECK(continued);
+  }
+
+  TEST_CASE("start trampolines returned continuations internally", "[cpo][cpo_start]")
+  {
+    bool started   = false;
+    bool continued = false;
+    op_deferred_start op{{}, &started, &continued};
+
+    ex::start(op);
+
+    CHECK(started);
+    CHECK(continued);
+  }
+
   TEST_CASE("tag types can be deduced from ex::start", "[cpo][cpo_start]")
   {
     static_assert(std::is_same_v<ex::start_t const, decltype(ex::start)>, "type mismatch");
+    static_assert(std::is_same_v<ex::start_or_defer_t const, decltype(ex::start_or_defer)>,
+                  "type mismatch");
   }
 }  // namespace
