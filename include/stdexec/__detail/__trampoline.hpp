@@ -15,6 +15,9 @@
  */
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
+#include <memory>
 #include <optional>
 #include <type_traits>
 #include <variant>
@@ -26,17 +29,29 @@ namespace STDEXEC
   namespace __tramp
   {
 
-    //template
-
-    //template<typename _T>
-    //concept __basic =
-    //  std::is_invocable_v<_T> &&
-    //  std::is_nothrow_invocable_v<_T> &&
-    //  std::is_move_constructible_v<_T> &&
-    //  std::is_nothrow_move_constructible_v<_T>;
+    template<typename _T>
+    concept __basic =
+      std::is_invocable_v<_T> &&
+      std::is_nothrow_invocable_v<_T> &&
+      std::is_move_constructible_v<_T> &&
+      std::is_nothrow_move_constructible_v<_T>;
 
     template<typename... _Ts>
     struct __list : std::type_identity<_Ts>... {
+      static constexpr std::size_t __size() noexcept {
+        if constexpr (sizeof...(_Ts)) {
+          return std::max({sizeof(_Ts)...});
+        } else {
+          return 0;
+        }
+      }
+      static constexpr std::size_t __align() noexcept {
+        if constexpr (sizeof...(_Ts)) {
+          return std::max({alignof(_Ts)...});
+        } else {
+          return 0;
+        }
+      }
       using __variant_t = std::variant<_Ts...>;
       template<typename _T>
       static constexpr bool __contains =
@@ -131,6 +146,7 @@ namespace STDEXEC
     //  Callback not in list, but it returns void
     template<typename... _Ts, typename _T>
       requires
+        __basic<_T> &&
         (!__list<_Ts...>::template __contains<_T>) &&
         std::is_same_v<
           std::invoke_result_t<_T>,
@@ -141,6 +157,7 @@ namespace STDEXEC
     //  Callback not in list, and it returns non-void
     template<typename... _Ts, typename _T>
       requires
+        __basic<_T> &&
         (!__list<_Ts...>::template __contains<_T>) &&
         (!std::is_same_v<
           std::invoke_result_t<_T>,
@@ -151,7 +168,68 @@ namespace STDEXEC
         std::invoke_result_t<_T>>::__t;
     };
 
+    template<typename _T>
+    using __invocables = __add_callback<__list<>, _T>::__t;
+
+    template<typename _T>
+    class __impl {
+      using __invocables = __tramp::__invocables<_T>;
+      using __variant = __invocables::__variant_t;
+      __variant __v;
+      template<typename... _Us>
+      constexpr bool __handle(std::variant<_Us...>&& __v) noexcept {
+        //  TODO
+        return false;
+      }
+      template<typename _U>
+      constexpr bool __handle(std::optional<_U>&& __o) noexcept {
+        if (!__o) {
+          return true;
+        }
+        return __handle(*std::move(__o));
+      }
+      template<typename _U>
+        requires std::is_invocable_v<_U>
+      constexpr bool __handle(_U&& __f) noexcept {
+        __v.template emplace<std::remove_cvref_t<_U>>(static_cast<_U&&>(__f));
+        return false;
+      }
+    public:
+      constexpr explicit __impl(_T __t) noexcept : __v(std::move(__t)) {}
+      constexpr bool operator()() & noexcept {
+        return std::visit(
+          [&](auto& __f) noexcept {
+            if constexpr (
+              std::is_same_v<
+                std::invoke_result_t<decltype(std::move(__f))>,
+                void>)
+            {
+              std::move(__f)();
+              return true;
+            } else {
+              return __handle(std::move(__f)());
+            }
+          },
+          __v);
+      }
+    };
+
   }  // namespace __tramp
+
+  template<typename _T>
+  concept __trampolinable = requires {
+    typename __tramp::__invocables<_T>;
+  };
+  
+  template<__trampolinable _T>
+  constexpr void __trampoline(_T __t) noexcept {
+    if constexpr (std::is_same_v<std::invoke_result_t<_T>, void>) {
+      static_cast<_T&&>(__t)();
+    } else {
+      __tramp::__impl __impl(std::move(__t));
+      while (!__impl());
+    }
+  }
 
 }  // namespace STDEXEC
 

@@ -18,6 +18,7 @@
 
 #include <catch2/catch_all.hpp>
 
+#include <cstddef>
 #include <optional>
 #include <type_traits>
 
@@ -70,9 +71,10 @@ namespace
         std::variant<int, float>>::__t>::value);
 
   struct terminal {
-    void operator()() && noexcept {
-    }
+    void operator()() && noexcept;
   };
+
+  static_assert(__trampolinable<terminal>);
 
   static_assert(
     std::is_same_v<
@@ -112,11 +114,10 @@ namespace
         std::variant<terminal>>::__t>);
 
   struct optionally_terminal {
-    std::optional<terminal> operator()() && noexcept {
-      //  TODO
-      return {};
-    }
+    std::optional<terminal> operator()() && noexcept;
   };
+
+  static_assert(__trampolinable<optionally_terminal>);
 
   static_assert(
     __tramp::__equivalent<
@@ -446,9 +447,60 @@ namespace
   //  CHECK(log == 14);
   //}
 
-  TEST_CASE("deferred trampoline iterates through returned invocables on destruction",
+  TEST_CASE("Invocable which returns void is invoked",
             "[detail][trampoline]")
   {
-    //  TODO
+    bool invoked = false;
+    __trampoline([&]() noexcept {
+      CHECK(!invoked);
+      invoked = true;
+    });
+    CHECK(invoked);
+  }
+
+  TEST_CASE("Invocable which returns disengaged optional is invoked",
+            "[detail][trampoline]")
+  {
+    bool inner_invoked = false;
+    auto f = [&]() noexcept {
+      CHECK(!inner_invoked);
+      inner_invoked = true;
+    };
+    bool invoked = false;
+    __trampoline([&]() noexcept {
+      CHECK(!invoked);
+      invoked = true;
+      return std::optional<decltype(f)>{};
+    });
+    CHECK(!inner_invoked);
+    CHECK(invoked);
+  }
+
+  TEST_CASE("Invocable which loops using an optional is invoked along with all continuations",
+            "[detail][trampoline]")
+  {
+    std::size_t inner_invoked = 0;
+    bool invoked = false;
+    struct type {
+      std::size_t& inner_invoked;
+      bool& invoked;
+      std::optional<type> operator()() && noexcept {
+        CHECK(invoked);
+        ++inner_invoked;
+        REQUIRE(inner_invoked < 4);
+        if (inner_invoked == 3) {
+          return {};
+        }
+        return *this;
+      }
+    };
+    __trampoline([&]() noexcept {
+      CHECK(!invoked);
+      CHECK(!inner_invoked);
+      invoked = true;
+      return type{inner_invoked, invoked};
+    });
+    CHECK(inner_invoked == 3);
+    CHECK(invoked);
   }
 }  // namespace
