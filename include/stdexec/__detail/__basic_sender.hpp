@@ -314,12 +314,12 @@ namespace STDEXEC
 
     STDEXEC_IMMOVABLE(__opstate);
 
-    STDEXEC_ATTRIBUTE(always_inline)
-    constexpr void start() noexcept
+    STDEXEC_ATTRIBUTE(nodiscard, always_inline)
+    constexpr auto start() noexcept -> decltype(auto)
     {
       static_assert(
         noexcept(STDEXEC::__apply(__sexpr_impl<__tag_t>::__start, __child_ops_, __state_)));
-      STDEXEC::__apply(__sexpr_impl<__tag_t>::__start, __child_ops_, __state_);
+      return STDEXEC::__apply(__sexpr_impl<__tag_t>::__start, __child_ops_, __state_);
     }
 
     __state_t     __state_;
