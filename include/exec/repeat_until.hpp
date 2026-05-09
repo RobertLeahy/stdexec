@@ -49,7 +49,6 @@ namespace experimental::execution
       {}
 
       virtual constexpr void __cleanup() noexcept = 0;
-      virtual constexpr void __repeat() noexcept  = 0;
 
       _Receiver __rcvr_;
 
@@ -60,27 +59,52 @@ namespace experimental::execution
     template <class _Boolean, bool _Expected>
     concept __is_bool_constant = __decay_t<_Boolean>::value == _Expected;
 
-    template <class _Receiver>
+    template <class _Child, class _Receiver>
+    struct __opstate;
+
+    template <class _Child, class _Receiver>
+    struct __start_again
+    {
+      STDEXEC_ATTRIBUTE(nodiscard)
+      constexpr auto operator()() const noexcept -> decltype(auto);
+
+      __opstate<_Child, _Receiver> *__state_;
+    };
+
+    template <class _Done, class _Again>
+    using __done_or_again_t = typename STDEXEC::__detail::__deferred_result<_Done, _Again>::__t;
+
+    template <class _Child, class _Receiver>
     struct __receiver
     {
       using receiver_concept = STDEXEC::receiver_tag;
+      using __opstate_t = __opstate<_Child, _Receiver>;
+      using __start_again_t = __start_again<_Child, _Receiver>;
 
       template <class... _Booleans>
-      constexpr void set_value(_Booleans &&...__bools) noexcept
+      STDEXEC_ATTRIBUTE(nodiscard)
+      constexpr auto set_value(_Booleans &&...__bools) noexcept -> decltype(auto)
       {
         if constexpr ((__is_bool_constant<_Booleans, true> && ...))
         {
           // Always done:
           __state_->__cleanup();
-          STDEXEC::set_value(std::move(__state_->__rcvr_));
+          return STDEXEC::set_value_or_defer(std::move(__state_->__rcvr_));
         }
         else if constexpr ((__is_bool_constant<_Booleans, false> && ...))
         {
           // Never done:
-          __state_->__repeat();
+          __state_->__cleanup();
+          return __start_again_t{static_cast<__opstate_t *>(__state_)};
         }
         else
         {
+          using __done_t = set_value_result_t<_Receiver>;
+          using __value_result_t = __done_or_again_t<__done_t, __start_again_t>;
+          using __error_t = set_error_result_t<_Receiver, std::exception_ptr>;
+          using __result_t =
+            typename STDEXEC::__detail::__deferred_result<__value_result_t, __error_t>::__t;
+
           // Mixed results:
           constexpr bool __is_nothrow = (std::is_nothrow_convertible_v<_Booleans, bool> && ...);
           STDEXEC_TRY
@@ -90,11 +114,18 @@ namespace experimental::execution
             if (__done)
             {
               __state_->__cleanup();
-              STDEXEC::set_value(std::move(__state_->__rcvr_));
+              return STDEXEC::__detail::__defer_result<__result_t>(
+                [&]() noexcept -> decltype(auto) {
+                  return STDEXEC::set_value_or_defer(std::move(__state_->__rcvr_));
+                });
             }
             else
             {
-              __state_->__repeat();
+              __state_->__cleanup();
+              return STDEXEC::__detail::__defer_result<__result_t>(
+                [&]() noexcept -> __start_again_t {
+                  return {static_cast<__opstate_t *>(__state_)};
+                });
             }
           }
           STDEXEC_CATCH_ALL
@@ -102,35 +133,42 @@ namespace experimental::execution
             if constexpr (!__is_nothrow)
             {
               __state_->__cleanup();
-              STDEXEC::set_error(std::move(__state_->__rcvr_), std::current_exception());
+              return STDEXEC::__detail::__defer_result<__result_t>([&]() noexcept -> decltype(auto) {
+                return STDEXEC::set_error_or_defer(std::move(__state_->__rcvr_),
+                                                   std::current_exception());
+              });
             }
           }
         }
       }
 
       template <class _Error>
-      constexpr void set_error(_Error &&__err) noexcept
+      STDEXEC_ATTRIBUTE(nodiscard)
+      constexpr auto set_error(_Error &&__err) noexcept -> decltype(auto)
       {
         STDEXEC_TRY
         {
           auto __err_copy = static_cast<_Error &&>(__err);  // make a local copy of the error...
           __state_->__cleanup();  // ... because this could potentially invalidate it.
-          STDEXEC::set_error(std::move(__state_->__rcvr_), static_cast<_Error &&>(__err_copy));
+          return STDEXEC::set_error_or_defer(std::move(__state_->__rcvr_),
+                                             static_cast<_Error &&>(__err_copy));
         }
         STDEXEC_CATCH_ALL
         {
           if constexpr (!__nothrow_decay_copyable<_Error>)
           {
             __state_->__cleanup();
-            STDEXEC::set_error(std::move(__state_->__rcvr_), std::current_exception());
+            return STDEXEC::set_error_or_defer(std::move(__state_->__rcvr_),
+                                               std::current_exception());
           }
         }
       }
 
-      constexpr void set_stopped() noexcept
+      STDEXEC_ATTRIBUTE(nodiscard)
+      constexpr auto set_stopped() noexcept -> decltype(auto)
       {
         __state_->__cleanup();
-        STDEXEC::set_stopped(std::move(__state_->__rcvr_));
+        return STDEXEC::set_stopped_or_defer(std::move(__state_->__rcvr_));
       }
 
       [[nodiscard]]
@@ -148,7 +186,7 @@ namespace experimental::execution
     template <class _Child, class _Receiver>
     struct __opstate final : __opstate_base<_Receiver>
     {
-      using __receiver_t = __receiver<_Receiver>;
+      using __receiver_t = __receiver<_Child, _Receiver>;
       using __child_op_t = STDEXEC::connect_result_t<_Child &, __receiver_t>;
 
       static constexpr bool __nothrow_connect = __nothrow_connectable<_Child &, __receiver_t>;
@@ -161,9 +199,10 @@ namespace experimental::execution
         __connect();
       }
 
-      constexpr void start() noexcept
+      STDEXEC_ATTRIBUTE(nodiscard)
+      constexpr auto start() noexcept -> __start_again<_Child, _Receiver>
       {
-        STDEXEC::start(*__child_op_);
+        return {this};
       }
 
       constexpr auto __connect() noexcept(__nothrow_connect) -> __child_op_t &
@@ -176,24 +215,43 @@ namespace experimental::execution
         __child_op_.reset();
       }
 
-      constexpr void __repeat() noexcept final
-      {
-        STDEXEC_TRY
-        {
-          STDEXEC::start(__connect());
-        }
-        STDEXEC_CATCH_ALL
-        {
-          if constexpr (!__nothrow_connect)
-          {
-            STDEXEC::set_error(static_cast<_Receiver &&>(this->__rcvr_), std::current_exception());
-          }
-        }
-      }
-
       _Child                            __child_;
       STDEXEC::__optional<__child_op_t> __child_op_;
     };
+
+    template <class _Child, class _Receiver>
+    constexpr auto __start_again<_Child, _Receiver>::operator()() const noexcept -> decltype(auto)
+    {
+      using __start_t = start_result_t<typename __opstate<_Child, _Receiver>::__child_op_t>;
+      using __error_t = set_error_result_t<_Receiver, std::exception_ptr>;
+      using __result_t = typename STDEXEC::__detail::__deferred_result<__start_t, __error_t>::__t;
+
+      if (__state_->__child_op_.has_value())
+      {
+        return STDEXEC::__detail::__defer_result<__result_t>([&]() noexcept -> decltype(auto) {
+          return STDEXEC::start_or_defer(*__state_->__child_op_);
+        });
+      }
+      else
+      {
+        STDEXEC_TRY
+        {
+          return STDEXEC::__detail::__defer_result<__result_t>([&]() noexcept -> decltype(auto) {
+            return STDEXEC::start_or_defer(__state_->__connect());
+          });
+        }
+        STDEXEC_CATCH_ALL
+        {
+          if constexpr (!__opstate<_Child, _Receiver>::__nothrow_connect)
+          {
+            return STDEXEC::__detail::__defer_result<__result_t>([&]() noexcept -> decltype(auto) {
+              return STDEXEC::set_error_or_defer(static_cast<_Receiver &&>(__state_->__rcvr_),
+                                                 std::current_exception());
+            });
+          }
+        }
+      }
+    }
 
     template <class _Child, class _Receiver>
     STDEXEC_HOST_DEVICE_DEDUCTION_GUIDE
