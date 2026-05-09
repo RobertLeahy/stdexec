@@ -52,7 +52,7 @@ namespace STDEXEC
     }
 
     template <class _Op>
-      requires __has_start_member<_Op> && __trampolinable<__start_result_t<_Op>>
+      requires __has_start_member<_Op> && (!__same_as<__start_result_t<_Op>, void>)
     [[nodiscard]]
     STDEXEC_ATTRIBUTE(always_inline)
     constexpr auto operator()(_Op &__op) const noexcept -> __start_result_t<_Op>

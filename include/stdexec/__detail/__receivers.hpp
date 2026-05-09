@@ -77,7 +77,7 @@ namespace STDEXEC
 
     template <class _Receiver, class... _As>
       requires __set_value_member<_Receiver, _As...>
-            && __trampolinable<__set_value_result_t<_Receiver, _As...>>
+            && (!__same_as<__set_value_result_t<_Receiver, _As...>, void>)
     [[nodiscard]]
     STDEXEC_ATTRIBUTE(host, device, always_inline)
     constexpr auto operator()(_Receiver &&__rcvr, _As &&...__as) const noexcept
@@ -157,7 +157,7 @@ namespace STDEXEC
 
     template <class _Receiver, class _Error>
       requires __set_error_member<_Receiver, _Error>
-            && __trampolinable<__set_error_result_t<_Receiver, _Error>>
+            && (!__same_as<__set_error_result_t<_Receiver, _Error>, void>)
     [[nodiscard]]
     STDEXEC_ATTRIBUTE(host, device, always_inline)
     constexpr auto operator()(_Receiver &&__rcvr, _Error &&__err) const noexcept
@@ -237,7 +237,7 @@ namespace STDEXEC
 
     template <class _Receiver>
       requires __set_stopped_member<_Receiver>
-            && __trampolinable<__set_stopped_result_t<_Receiver>>
+            && (!__same_as<__set_stopped_result_t<_Receiver>, void>)
     [[nodiscard]]
     STDEXEC_ATTRIBUTE(host, device, always_inline)
     constexpr auto operator()(_Receiver &&__rcvr) const noexcept -> __set_stopped_result_t<_Receiver>
