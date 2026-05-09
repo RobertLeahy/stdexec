@@ -26,6 +26,8 @@
 #include "../functional.hpp"
 
 #include <exception>
+#include <optional>
+#include <variant>
 
 #include "__prologue.hpp"
 
@@ -314,6 +316,77 @@ namespace STDEXEC
 
   namespace __detail
   {
+    template <class _ValueResult, class _ErrorResult>
+    struct __deferred_result
+    {
+      using __t = std::variant<_ValueResult, _ErrorResult>;
+    };
+
+    template <class _Result>
+    struct __deferred_result<_Result, _Result>
+    {
+      using __t = _Result;
+    };
+
+    template <class _ErrorResult>
+    struct __deferred_result<void, _ErrorResult>
+    {
+      using __t = std::optional<_ErrorResult>;
+    };
+
+    template <class _ValueResult>
+    struct __deferred_result<_ValueResult, void>
+    {
+      using __t = std::optional<_ValueResult>;
+    };
+
+    template <>
+    struct __deferred_result<void, void>
+    {
+      using __t = void;
+    };
+
+    template <class _Result>
+    inline constexpr bool __is_optional_v = false;
+
+    template <class _Result>
+    inline constexpr bool __is_optional_v<std::optional<_Result>> = true;
+
+    template <class _Result>
+    inline constexpr bool __is_variant_v = false;
+
+    template <class... _Results>
+    inline constexpr bool __is_variant_v<std::variant<_Results...>> = true;
+
+    template <class _Result, class _Fun>
+    STDEXEC_ATTRIBUTE(host, device)
+    constexpr auto __defer_result(_Fun &&__fun) -> _Result
+    {
+      using _FunResult = __call_result_t<_Fun>;
+
+      if constexpr (__same_as<_Result, void>)
+      {
+        static_cast<_Fun &&>(__fun)();
+      }
+      else if constexpr (__same_as<_FunResult, void>)
+      {
+        static_cast<_Fun &&>(__fun)();
+        return std::nullopt;
+      }
+      else if constexpr (__is_optional_v<_Result>)
+      {
+        return _Result{std::in_place, static_cast<_Fun &&>(__fun)()};
+      }
+      else if constexpr (__is_variant_v<_Result>)
+      {
+        return _Result{std::in_place_type<_FunResult>, static_cast<_Fun &&>(__fun)()};
+      }
+      else
+      {
+        return static_cast<_Fun &&>(__fun)();
+      }
+    }
+
     template <class _Receiver, class _Tag, class... _Args>
     constexpr auto __try_completion(_Tag (*)(_Args...))
       -> __mexception<_WHAT_(_CONCEPT_CHECK_FAILURE_),
@@ -339,27 +412,64 @@ namespace STDEXEC
 
   /// A utility for calling set_value with the result of a function invocation:
   template <class _Receiver, class _Fun, class... _As>
-  STDEXEC_ATTRIBUTE(host, device)
-  constexpr void __set_value_from(_Receiver &&__rcvr, _Fun &&__fun, _As &&...__as) noexcept
+  STDEXEC_ATTRIBUTE(nodiscard, host, device)
+  constexpr auto __set_value_from(_Receiver &&__rcvr, _Fun &&__fun, _As &&...__as) noexcept
+    -> decltype(auto)
   {
-    STDEXEC_TRY
+    using _ValueResult = decltype([&]() noexcept -> decltype(auto) {
+      if constexpr (__std::same_as<void, __invoke_result_t<_Fun, _As...>>)
+      {
+        return STDEXEC::set_value_or_defer(static_cast<_Receiver &&>(__rcvr));
+      }
+      else
+      {
+        return STDEXEC::set_value_or_defer(
+          static_cast<_Receiver &&>(__rcvr),
+          __invoke(static_cast<_Fun &&>(__fun), static_cast<_As &&>(__as)...));
+      }
+    }());
+
+    if constexpr (__nothrow_invocable<_Fun, _As...>)
     {
       if constexpr (__std::same_as<void, __invoke_result_t<_Fun, _As...>>)
       {
         __invoke(static_cast<_Fun &&>(__fun), static_cast<_As &&>(__as)...);
-        STDEXEC::set_value(static_cast<_Receiver &&>(__rcvr));
+        return STDEXEC::set_value_or_defer(static_cast<_Receiver &&>(__rcvr));
       }
       else
       {
-        STDEXEC::set_value(static_cast<_Receiver &&>(__rcvr),
-                           __invoke(static_cast<_Fun &&>(__fun), static_cast<_As &&>(__as)...));
+        return STDEXEC::set_value_or_defer(
+          static_cast<_Receiver &&>(__rcvr),
+          __invoke(static_cast<_Fun &&>(__fun), static_cast<_As &&>(__as)...));
       }
     }
-    STDEXEC_CATCH_ALL
+    else
     {
-      if constexpr (!__nothrow_invocable<_Fun, _As...>)
+      using _ErrorResult = set_error_result_t<_Receiver, std::exception_ptr>;
+      using _Result = typename __detail::__deferred_result<_ValueResult, _ErrorResult>::__t;
+
+      STDEXEC_TRY
       {
-        STDEXEC::set_error(static_cast<_Receiver &&>(__rcvr), std::current_exception());
+        return __detail::__defer_result<_Result>([&]() -> decltype(auto) {
+          if constexpr (__std::same_as<void, __invoke_result_t<_Fun, _As...>>)
+          {
+            __invoke(static_cast<_Fun &&>(__fun), static_cast<_As &&>(__as)...);
+            return STDEXEC::set_value_or_defer(static_cast<_Receiver &&>(__rcvr));
+          }
+          else
+          {
+            return STDEXEC::set_value_or_defer(
+              static_cast<_Receiver &&>(__rcvr),
+              __invoke(static_cast<_Fun &&>(__fun), static_cast<_As &&>(__as)...));
+          }
+        });
+      }
+      STDEXEC_CATCH_ALL
+      {
+        return __detail::__defer_result<_Result>([&]() noexcept -> decltype(auto) {
+          return STDEXEC::set_error_or_defer(static_cast<_Receiver &&>(__rcvr),
+                                             std::current_exception());
+        });
       }
     }
   }

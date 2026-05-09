@@ -63,17 +63,19 @@ namespace STDEXEC
       {
         template <class _Tag, class _State, class... _Args>
         STDEXEC_ATTRIBUTE(host, device)
-        constexpr void operator()(__ignore, _State& __state, _Tag, _Args&&... __args) const noexcept
+        constexpr auto operator()(__ignore, _State& __state, _Tag, _Args&&... __args) const noexcept
+          -> decltype(auto)
         {
           if constexpr (__same_as<_Tag, set_value_t>)
           {
-            STDEXEC::__set_value_from(static_cast<_State&&>(__state).__rcvr_,
-                                      static_cast<_State&&>(__state).__data_,
-                                      static_cast<_Args&&>(__args)...);
+            return STDEXEC::__set_value_from(static_cast<_State&&>(__state).__rcvr_,
+                                             static_cast<_State&&>(__state).__data_,
+                                             static_cast<_Args&&>(__args)...);
           }
           else
           {
-            _Tag()(static_cast<_State&&>(__state).__rcvr_, static_cast<_Args&&>(__args)...);
+            return typename _Tag::__defer_t{}(static_cast<_State&&>(__state).__rcvr_,
+                                              static_cast<_Args&&>(__args)...);
           }
         }
       };
