@@ -191,24 +191,26 @@ namespace STDEXEC
         [] {
         };
 
-      static constexpr auto __start =  //
-        []<class... _ChildOps>(__ignore, _ChildOps&... __ops) noexcept
-      -> decltype(auto)
+      struct __start_t
       {
-        static_assert(sizeof...(_ChildOps) > 0);
-        if constexpr (sizeof...(_ChildOps) == 1)
+        template <class _First, class... _Rest>
+        [[nodiscard]]
+        constexpr auto operator()(__ignore, _First& __first, _Rest&... __rest) const noexcept
+          -> decltype(auto)
         {
-          return (STDEXEC::start_or_defer(__ops), ...);
-        }
-        else if constexpr ((!start_defers_v<_ChildOps> && ...))
-        {
-          (STDEXEC::start_or_defer(__ops), ...);
-        }
-        else
-        {
-          (STDEXEC::start(__ops), ...);
+          if constexpr (sizeof...(_Rest) == 0)
+          {
+            return STDEXEC::start_or_defer(__first);
+          }
+          else
+          {
+            STDEXEC::start(__first);
+            return (*this)(__ignore(), __rest...);
+          }
         }
       };
+
+      static constexpr __start_t __start{};
 
       static constexpr auto __complete =  //
         []<class _Idx, class _State, class _Set, class... _As>(_Idx,
