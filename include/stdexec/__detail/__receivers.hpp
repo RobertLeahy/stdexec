@@ -99,6 +99,8 @@ namespace STDEXEC
 
   struct set_value_t : __detail::__completion_tag<__disposition::__value>
   {
+    using __defer_t = set_value_or_defer_t;
+
     template <class _Fn, class... _As>
     using __f = __minvoke<_Fn, _As...>;
 
@@ -177,6 +179,8 @@ namespace STDEXEC
 
   struct set_error_t : __detail::__completion_tag<__disposition::__error>
   {
+    using __defer_t = set_error_or_defer_t;
+
     template <class _Fn, class... _Args>
       requires(sizeof...(_Args) == 1)
     using __f = __minvoke<_Fn, _Args...>;
@@ -252,6 +256,8 @@ namespace STDEXEC
 
   struct set_stopped_t : __detail::__completion_tag<__disposition::__stopped>
   {
+    using __defer_t = set_stopped_or_defer_t;
+
     template <class _Fn, class... _Args>
       requires(sizeof...(_Args) == 0)
     using __f = __minvoke<_Fn, _Args...>;
