@@ -58,17 +58,18 @@ namespace STDEXEC
         []<class _Tag, class _State, class... _Args>(__ignore,
                                                      _State& __state,
                                                      _Tag,
-                                                     _Args&&... __args) noexcept -> void
+                                                     _Args&&... __args) noexcept -> decltype(auto)
       {
         if constexpr (__same_as<_Tag, set_stopped_t>)
         {
-          STDEXEC::__set_value_from(static_cast<_State&&>(__state).__rcvr_,
-                                    static_cast<_State&&>(__state).__data_,
-                                    static_cast<_Args&&>(__args)...);
+          return STDEXEC::__set_value_from(static_cast<_State&&>(__state).__rcvr_,
+                                           static_cast<_State&&>(__state).__data_,
+                                           static_cast<_Args&&>(__args)...);
         }
         else
         {
-          _Tag()(static_cast<_State&&>(__state).__rcvr_, static_cast<_Args&&>(__args)...);
+          return typename _Tag::__defer_t{}(static_cast<_State&&>(__state).__rcvr_,
+                                            static_cast<_Args&&>(__args)...);
         }
       };
     };
