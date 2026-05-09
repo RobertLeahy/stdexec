@@ -22,8 +22,6 @@
 #include "../stdexec/execution.hpp"
 
 #include "completion_signatures.hpp"
-#include "sequence.hpp"
-#include "trampoline_scheduler.hpp"
 
 #include <exception>
 #include <type_traits>
@@ -151,14 +149,9 @@ namespace experimental::execution
     struct __opstate final : __opstate_base<_Receiver>
     {
       using __receiver_t = __receiver<_Receiver>;
-      using __bouncy_sndr_t =
-        __result_of<exec::sequence, schedule_result_t<trampoline_scheduler>, _Child &>;
-      using __child_op_t = STDEXEC::connect_result_t<__bouncy_sndr_t, __receiver_t>;
+      using __child_op_t = STDEXEC::connect_result_t<_Child &, __receiver_t>;
 
-      static constexpr bool __nothrow_connect =
-        __nothrow_invocable<STDEXEC::schedule_t, trampoline_scheduler>
-        && __nothrow_invocable<sequence_t, schedule_result_t<trampoline_scheduler>, _Child &>
-        && __nothrow_connectable<__bouncy_sndr_t, __receiver_t>;
+      static constexpr bool __nothrow_connect = __nothrow_connectable<_Child &, __receiver_t>;
 
       constexpr explicit __opstate(_Child __child, _Receiver __rcvr)
         noexcept(__nothrow_move_constructible<_Child> && __nothrow_connect)
@@ -175,10 +168,7 @@ namespace experimental::execution
 
       constexpr auto __connect() noexcept(__nothrow_connect) -> __child_op_t &
       {
-        return __child_op_.__emplace_from(STDEXEC::connect,
-                                          exec::sequence(STDEXEC::schedule(trampoline_scheduler{}),
-                                                         __child_),
-                                          __receiver_t{this});
+        return __child_op_.__emplace_from(STDEXEC::connect, __child_, __receiver_t{this});
       }
 
       constexpr void __cleanup() noexcept final
@@ -222,13 +212,6 @@ namespace experimental::execution
 
     struct __repeat_until_impl : __sexpr_defaults
     {
-      static constexpr auto __get_attrs =
-        []<class _Child>(__ignore, __ignore, _Child const &__child) noexcept
-        -> __seq::__attrs<schedule_result_t<trampoline_scheduler>, _Child &>
-      {
-        return {STDEXEC::schedule(trampoline_scheduler{}), const_cast<_Child &>(__child)};
-      };
-
       template <class _Child>
       static constexpr auto __transform_values = []<class... _Args>()
       {
@@ -271,7 +254,6 @@ namespace experimental::execution
       static consteval auto __get_completion_signatures()
       {
         using __child_t                  = __child_of<_Sender>;
-        using __bouncer_t                = schedule_result_t<trampoline_scheduler>;
         using __eptr_completion_t        = set_error_t(std::exception_ptr);
         constexpr auto __eptr_completion = (__eptr_completion_t *) nullptr;
 
@@ -284,12 +266,10 @@ namespace experimental::execution
           // The repeat_until sender is a dependent sender if one of the following is
           // true:
           //   - the child sender is a dependent sender, or
-          //   - the trampoline scheduler's sender is a dependent sender, or
           //   - sizeof...(_Env) == 0 and the child sender does not have a
           //     set_error(exception_ptr) completion.
           constexpr bool __is_dependent = (sizeof...(_Env) == 0)
-                                       && (dependent_sender<__bouncer_t>
-                                           || !__sigs.__contains(__eptr_completion));
+                                       && !__sigs.__contains(__eptr_completion);
           if constexpr (__is_dependent)
           {
             return exec::throw_compile_time_error<dependent_sender_error,
@@ -300,12 +280,7 @@ namespace experimental::execution
             using __has_nothrow_connect_t =
               __mbool<(__nothrow_connectable<__child_t, __receiver_archetype<_Env>> || ...)>;
             constexpr auto __eptr_sigs    = __eptr_completion_unless_t<__has_nothrow_connect_t>();
-            constexpr auto __bouncer_sigs = exec::transform_completion_signatures(
-              get_completion_signatures<__bouncer_t, _Env...>(),
-              exec::ignore_completion());  // drop the set_value_t() completion from the
-                                           // trampoline scheduler.
-
-            return exec::concat_completion_signatures(__sigs, __eptr_sigs, __bouncer_sigs);
+            return exec::concat_completion_signatures(__sigs, __eptr_sigs);
           }
         }
       }
