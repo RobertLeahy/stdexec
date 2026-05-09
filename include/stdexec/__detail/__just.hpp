@@ -47,9 +47,28 @@ namespace STDEXEC
     template <class _SetTag, class _Tuple, class _Receiver>
     struct __opstate
     {
-      constexpr void start() noexcept
+      STDEXEC_ATTRIBUTE(nodiscard)
+      constexpr auto start() noexcept -> decltype(auto)
       {
-        __apply(_SetTag(), static_cast<_Tuple&&>(__data_), static_cast<_Receiver&&>(__rcvr_));
+        return __apply(
+          [this]<class... _As>(_As&&... __as) noexcept -> decltype(auto) {
+            if constexpr (__same_as<_SetTag, set_value_t>)
+            {
+              return STDEXEC::set_value_or_defer(static_cast<_Receiver&&>(__rcvr_),
+                                                 static_cast<_As&&>(__as)...);
+            }
+            else if constexpr (__same_as<_SetTag, set_error_t>)
+            {
+              return STDEXEC::set_error_or_defer(static_cast<_Receiver&&>(__rcvr_),
+                                                 static_cast<_As&&>(__as)...);
+            }
+            else
+            {
+              static_assert(__same_as<_SetTag, set_stopped_t>);
+              return STDEXEC::set_stopped_or_defer(static_cast<_Receiver&&>(__rcvr_));
+            }
+          },
+          static_cast<_Tuple&&>(__data_));
       }
 
       _Receiver __rcvr_;
