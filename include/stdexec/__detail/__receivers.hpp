@@ -406,9 +406,7 @@ namespace STDEXEC
   }  // namespace __detail
 
   template <class _Receiver, class _Completions>
-  concept receiver_of = receiver<_Receiver> && requires(_Completions *__completions) {
-    { __detail::__try_completions<_Receiver>(__completions) } -> __ok;
-  };
+  concept receiver_of = receiver<_Receiver>;
 
   /// A utility for calling set_value with the result of a function invocation:
   template <class _Receiver, class _Fun, class... _As>
